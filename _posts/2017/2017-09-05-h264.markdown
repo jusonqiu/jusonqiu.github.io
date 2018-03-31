@@ -1,0 +1,65 @@
+---
+layout: "post"
+title: "h264"
+date: "2017-09-05 17:42"
+---
+
+H.264，又称为MPEG-4第10部分，高级视频编码（英语：MPEG-4 Part 10, Advanced Video Coding，缩写为MPEG-4 AVC）是一种面向块的基于运动补偿的视频编码标准（英语：Video_coding_format）.
+
+H.264 文件包含两个主要Concepts， Network Abstraction Layer（NAL) 和 Video Coding Layer（VCL）层。一个 H264文件中，含有多个NAL units（NALU），每一个NALU又可以分为VCL何non-VLC，视频数据由编解码器处理并打包成NAL单元。
+
+## NALU
+
+NAL unit 有两种不同的打包方式，Packet-Transport 和 Byte-Stream Format；
+
+**Packet-Tansport** 格式协议以数据分片形式存储，RTP 就是使用这种方式，这样我们不需要格外的标记也能方便地找到 NAL unit 边界。Packet-Tansport 格式常常用在流媒体中。
+
+**Byte-Stream** H264 以文件格式存储同时可以在其他平台上解码处理，这样我们常常就会以这种格式存储。
+为了方便找到每一帧的边界，通常会在 NAL unit 的开始添加 4-byte 起初位：``0x000001``
+or ``0x00000001``. 这种打包格式也限定了 NAL 里面不能含有 ``0x000001``
+和 ``0x00000001`` 这两字符。这种情况下可以使用0x03键入03 byte 中，也就是
+``0x000000, 0x000001, 0x000002, 0x000003`` 改为``0x00000300, 0x00000301, 0x00000302, 0x00000303``.
+
+### NAL Unit Header
+
+NALU 以第一个byte来标识 NAL 类型和一些其他信息，下一个byte开始就是NAL 的payload 数据。
+头部数据如下：
+
+```
++---------------+
+|0|1|2|3|4|5|6|7|
++-+-+-+-+-+-+-+-+
+|F|NRI|  Type   |
++---------------+
+```
+
+![](/images/2017-09-05-h264-ed034.png)
+
+以 0x67 为例， 对应二进制是 ``0110 0111``, F = 0, NRI = 3, Type = 7; 第一个bit，即 F（forbidden_zero_bit）
+用来标识传送是否发生错误，1 => 错误， 0 => 无。
+
+第2~3个bit表示 nal_ref_idc， 用来标识 NALU 是 field / frame / picture。 如果NALU 是 field，
+frame, picture 中任何一种，nal_ref_idc != 0; According to the Recommendation, non-zero nal_ref_idc specifies that the content of the NAL unit contains a sequence parameter set (SPS), a SPS extension, a subset SPS, a picture parameter set (PPS), a slice of a reference picture, a slice data partition of a reference picture, or a prefix NAL unit preceding a slice of a reference picture. On the other hand, if it is a non-reference field / frame / picture, nal_ref_idc is equal to 0. For any non-zero value, the larger the value, the more the importance of the NAL unit. In this case, it is equal to 3 (0x11) and is a reference field / frame / picture (In fact, it’s a SPS. I’ll tell you more later).
+
+接下来的5个bit是 nal_unit_type，用来标识RBSP数据类型，1~5 表示 VCL NAL units 类型，只有NAL units 实数的称为 non-VCL NAL units。
+
+*nal_unit_type Table 7-1*
+
+![nal_unit_type-table-7-1](/images/nal_unit_type-table-7-1.png)
+
+*nal_ref_idc 和 nal_unit_type 的关系*
+
+![relation-nal_ref_idc-nal_unit_type](/images/relation-nal_ref_idc-nal_unit_type.png)
+
+### 参考
+
+- <a href="http://yumichan.net/video-processing/video-compression/introduction-to-h264-nal-unit/?lang=zh">http://yumichan.net/video-processing/video-compression/introduction-to-h264-nal-unit/?lang=zh</a>
+- <a href="https://tools.ietf.org/html/rfc6184">https://tools.ietf.org/html/rfc6184</a>
+- <a href="https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-H.264-201704-I!!PDF-E&type=items">https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-H.264-201704-I!!PDF-E&type=items</a>
+
+## Frame Type
+
+- I Frame: 关键帧，包含一张完整的图像信息；帧内预测。
+- IDR Frame: 关键帧，一个 GoP 的首帧，解码器会在IDR帧位置刷新，使 DPB （DecodedPictureBuffer）清空，重新计算新的系列开始，避免了错误传播。<span style="color: red">对于IDR帧来说，在IDR帧之后的所有帧都不能引用任何IDR帧之前的帧的内容，与此相反，对于普通的I-帧来说，位于其之后的B-和P-帧可以引用位于普通I-帧之前的I-帧。</span>
+- P Frame
+- B Frame

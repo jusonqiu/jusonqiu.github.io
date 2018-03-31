@@ -1,0 +1,16 @@
+# Site settings
+title: "Jac Daily Note"
+description: "If you are doing your best, you will not have to worry about failure."
+baseurl: "/"
+url: ""
+author: "Jac Q"
+
+# Build settings
+kramdown:
+  input: GFM
+permalink: pretty
+
+# Third-party services
+# just leave empty to disable it
+google_analytics:
+disqus_shortname: JacQ Github

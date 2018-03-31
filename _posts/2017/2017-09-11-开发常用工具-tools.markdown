@@ -1,0 +1,30 @@
+---
+layout: "post"
+title: "开发常用工具 tools"
+date: "2017-09-11 17:46"
+---
+
+# 流媒体分析工具
+
+## SSIM PSNR 分析工具
+
+[ssim tools](https://jusonqiu.github.io/2017/09/11/ssim-tools/)
+
+## H.264 SPS PPS 分析工具
+
+[h264bitstream](https://sourceforge.net/projects/h264bitstream/)
+
+## H.264 帧分析工具
+
+CodecVisa
+
+
+# chrome plugin
+
+## http 调试工具
+
+postman
+
+## wiki 阅读工具
+
+wikiwand

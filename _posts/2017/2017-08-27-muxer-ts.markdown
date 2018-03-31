@@ -1,0 +1,127 @@
+---
+layout: "post"
+title: "MPEG tansport stream"
+date: "2017-08-27 15:34"
+---
+
+# 目录
+
+- [目录](#目录)
+- [概念](#概念)
+	- [TS 包头结构](#ts-包头结构)
+	- [PAT表的结构](#pat表的结构)
+
+# 概念
+
+MPEG-TS 是一种容器（Media container）,用来封装打包audio，video 和 [PSIP 节目特殊信息流（Program and Sytem information Protocol）](https://www.wikiwand.com/en/Program_and_System_Information_Protocol) 基本流数据， PSI 流包括：节目关联表（PAT）、节目映射表（PMT）、网络信息表和条件访问表， 常用文件后缀名 `.ts, .tsv, .tsa`，Internet media type `video/MP2T` .该协议只要用于不可靠的网路流媒体，目前短视频，直播回放常采用改格式。
+
+
+![[mpeg-ts feature 1]](/images/[mpeg-tsFeature1].png)
+
+- ES（Elementary Stream）
+
+ 基本码流，包含音视频数据和**连续码流**。
+
+- PES (packetized elementary streams)
+
+ 基本打包码流，是将基本的ES流根据需要分成长度不等的数据包，并加上包头。
+
+ - TS (Transport Stream)
+
+  也叫传输流，是固定长度 188 字节的包组成，含有杜律时基的一个或多个program，一个Program有可以包含多个视频，音频，文字信息ES流； 每个ES流含有不同的PID，TS 流中有一些固定的PID用来间隔发送的program 和 ES 流信息，也就是 PAT 和 PMT表。
+
+ ## PSI
+
+PSI 用来面试传送流的组成的结构，在MPEG-II系统中担任极其重要的角色，在多路复用尤为重要的 PAT 和 PMT 表。
+
+（1）节目关联表（PAT Program Association Table）
+
+  PAT表用MPEG指定的PID（00）标明，通常用PID=0表示。它的主要作用是针对复用的每一路传输流，提供传输流中包含哪些节目、节目的编号以及对应节目的节目映射表（PMT）的位置，即PMT的TS包的包标识符（PID）的值，同时还提供网络信息表（NIT）的位置，即NIT的TS包的包标识符（PID）的值。
+
+（2）条件接收表（CAT Conditional Access Table）
+
+  CAT表用MPEG指定的PID（01）标明，通常用PID=1表示。它提供了在复用流中条件接收系统的有关信息，指定CA系统与它们相应的授权管理信息（EMM））之间的联系，指定EMM的PID，以及相关的参数。
+
+（3）节目映射表（PMT Program Map Table）
+
+  节目映射表指明该节目包含的内容，即该节目由哪些流组成，这些流的类型（音频、视频、数据），以及组成该节目的流的位置，即对应的TS包的PID值，每路节目的节目时钟参考（PCR）字段的位置。
+
+（4）网络信息表（NIT Nerwork Information Table）
+
+  网络信息表提供关于多组传输流和传输网络相关的信息，其中包含传输流描述符、通道频率、卫星发射器号码、调制特性等信息。
+
+（5）传输流描述表（TSDT Transport Stream Description Table）
+
+  传输流描述表（TSDT Transport Stream Description Table
+
+（6）专用段（private_section）
+
+  MPEG-2还定义了一种专用段用于传送用户自己定义的专用数据。
+
+（7）描述符（Descripter）
+
+  MPEG-2还定义了许多描述符，这些描述符提供关于视频流、音频流、语言、层次、系统时钟、码率等多方面的信息，在PSI的表中可以灵活的采用这些描述符进一步为接收机提供更多的信息。
+
+
+ **解析ts的过程就是通过找到PAT表，从PAT表中找出对应存在的节目的id，按照这些id找到这些节目的PMT表，从中获到这些节目总的相对的媒体数据id，然后通过这些id，再从ts文件中找到这些文件的es数据，来完成解码或者别的什么操作**
+
+![mpeg-ts-psi-table-example](/images/mpeg-ts-psi-table-example.png)
+
+## TS 包头结构
+
+ts文件，将每个数据包分成188个字节来发送。ts文件格式如图：
+
+![mpeg-ts-header-format](/images/mpeg-ts-header-format.png)
+
+sync_btye固定为0x47 ,说明从这个字节后的188个字节都属于一个ts包。 比较重要的是PID这个字段，共13位，表示了这个ts包负载数据的类型，如果没有这个信息，无法再后续寻找我们想要的数据。
+
+```c
+typedef struct TS_packet_header
+{
+  unsigned sync_byte:8;  //同步字节，固定为0x47， 表示后面是TS分组，后面的数据不会出现0x47
+  unsigned transport_error_indictor: 1; //传输错误标志位，一般传输错误的话就不会处理这个包
+  unsigned payload_unit_start_indictor : 1; //有效负载的开始标志位
+  unsigned transport_priority: 1; //传输优先级，1表示高优先级
+  unsigned PID: 13; 有效负载数据类型
+  unsigned transport_scrambling_control: 2; // 加密标志位，00 表示未加密
+  unsigned adaption_field_control: 2; // 调整字段控制， 01 表示有效负载，10 仅含调整字段，11 含有调整字段和有效负载， 为 00 的话解码器不进行处理
+  unsigned continuty_couter: 4; //计数器，范围0-15
+}TS_packet_header;
+
+```
+
+## PAT表的结构
+
+TS的解析工作，一般都是从找PAT表开始，所以，要先找到负载中头个字节是0x00的，就说明找到PAT表了。section_length表示从这个字段开始后有几个字节，如果不满188个字节，就用0xff填满。可以发现去掉最后4位的crc校验位从section_number之后的5个字节开始，就是这个ts文件中缩有的节目了，每两个字节代表一个节目，从中很容易获取到节目的ID信息。
+
+
+![mpeg-ts-pat-header-format](/images/mpeg-ts-pat-header-format.png)
+
+```c
+typedef struct TS_PAT{
+    unsigned table_id: 8; //固定位0x00, 标识是该表是PAT
+    unsigned section_syntax_indicator: 1; // 段语法标志位，固定为 1
+    unsigned zero: 1; // 0
+    unsigned reserved_1: 2 ;
+    unsigned section_length : 12; // 表示这个字节后面有用的字节数，包括CRC32
+    unsigned transport_stream_id: 16; //该传输流的ID，区别雨一个网络中的其他多路复用的流
+    unsigned version_number: 5; //范围0-31，表示PAT的版本号
+    unsigned current_next_indicator: 1;//发送的PAT是当前有效还是下一个PAT有效
+    unsigned section_number:8; //分段的号码，PAT可能分为多段传输第一段为00，后续加一，最多可能有256段
+    unsigned last_section_number: 8; //最后一个分段的号码
+
+    std:vector<TS_PAT_Program> program;
+    unsigned reserver_3 : 3, //保留位
+    unsigned network_PID: 13 // 网络信息表（NIT）的PID
+    unsigned CRC_32: 32; //CRC32 校验码
+} PS_PAT;
+
+```
+
+获取到ID之后，就可以开始查找关于这个id的PMT表了
+
+![mpeg-ts-find-pmt](/images/mpeg-ts-find-pmt.png)
+
+PMT表中 多数字段含义和PAT表类似，值得注意的是对于对应节目中的媒体数都是5个字节表示，音频数据或视屏数据。所以，从中可以发现当前节目有多少的音视频相关信息。从stream_type可以通过查表来得知是音频数据还是视频数据等信息,之后就可以通过得到的elementary_pid来查找对应的音视频信息了。从而从中获取出es流。
+
+> 有更改，原博客地址：blog.chinaunix.NET/uid-24922718-id-3686257.html

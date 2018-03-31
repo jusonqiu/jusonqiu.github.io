@@ -1,0 +1,38 @@
+---
+layout: "post"
+title: "rtmp 协议笔记"
+date: "2017-09-04 16:00"
+---
+
+RTMP协议是应用层协议，是要靠底层可靠的传输层协议（通常是TCP）来保证信息传输的可靠性的。
+在基于传输层协议的链接建立完成后，RTMP协议也要客户端和服务器通过“握手”来建立基于传输层链接之上的RTMP Connection链接
+，在Connection链接上会传输一些控制信息，如SetChunkSize,SetACKWindowSize。其中CreateStream命令会创建一个Stream链接，
+用于传输具体的音视频数据和控制这些信息传输的命令信息。RTMP协议传输时会对数据做自己的格式化，这种格式的消息我们称之为RTMP Message，而实际传输的时候为了更好地实现多路复用、分包和信息的公平性，发送端会把Message划分为带有Message ID的Chunk，每个Chunk可能是一个单独的Message，也可能是Message的一部分，在接受端会根据chunk中包含的data的长度，message id 和 message 的长度把 chunk 还原成完整的 Message，从而实现信息的收发。
+
+## 握手过程
+
+要建立一个有效的RTMP Connection链接，首先要“握手”:客户端要向服务器发送C0,C1,C2（按序）三个chunk，服务器向客户端发送S0,S1,S2（按序）三个chunk，然后才能进行有效的信息传输。RTMP协议本身并没有规定这6个Message的具体传输顺序，但RTMP协议的实现者需要保证这几点：
+
+- 客户端要等收到S1之后才能发送C2
+- 客户端要等收到S2之后才能发送其他信息（控制信息和真实音视频等数据）
+- 服务端要等到收到C0之后发送S1
+- 服务端必须等到收到C1之后才能发送S2
+- 服务端必须等到收到C2之后才能发送其他信息（控制信息和真实音视频等数据）
+
+
+RTMP-Handshake
+
+[RTMP-HandShake](/images/RTMP-HandShake.png)
+
+理论上来讲只要满足以上条件，如何安排6个Message的顺序都是可以的，但实际实现中为了在保证握手的身份验证功能的基础上尽量减少通信的次数，一般的发送顺序是这样的，这一点可以通过wireshark抓ffmpeg推流包进行验证：
+
+
+只要满足以上条件，减少通信次数，也可以这样：
+
+｜client \｜ Server  ｜
+|:------------------:|
+｜  －－－C0+C1—->    |
+｜  <－－S0+S1+S2–    |
+｜  －－－C2-－－－>   ｜
+
+## RTMP Chunk Stream
