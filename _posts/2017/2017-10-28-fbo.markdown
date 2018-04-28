@@ -1,0 +1,169 @@
+---
+layout: "post"
+title: "FBO"
+date: "2017-10-28 11:38"
+---
+
+## FBO, Frame Buffer Object
+
+在OpenGL渲染流水线上，几何数据和纹理数据被多次转换、多次测试，最后以2维像素的形式显示在屏幕上。而OpenGL流水线上最后显示阶段像素所在处，称为帧缓存。帧缓存可视为2维数组，或OpenGL使用的存储区域，它包括了：颜色缓存、深度缓存、模板缓存和累积缓存。
+一般情况下，帧缓存由window系统生成并管理，供OpenGL使用。这种缺省的帧缓存称之为“window系统生成”（window-system-provided）的帧缓存。
+
+在OpenGL扩展中，GL_EXT_framebuffer_object提供了另外一种不能够显示的帧缓存接口，帧缓存对象（FBO）。这种帧缓存称之为“应用生成”帧缓存，以区别于“window系统生成”帧缓存。通过使用帧缓存对象（FBO），OpenGL应用程序可以将显示内容输出到“应用生成”帧缓存，而不是传统的“window系统生成”帧缓存。这个过程全部由OpenGL控制。
+
+和window系统提供的帧缓存一样，FBO也有一组相应存储颜色、深度和模板（注意没有累积）数据的缓存区域。我们把FBO中存储这些数据的区域称之为“缓存关联图像”（framebuffer-attached image）。它完全由OpenGL管理控制。
+
+缓存关联图像分为两类：纹理缓存和渲染（显示）缓存（renderbuffer）。如果纹理对象的图像数据关联到帧缓存，opengl执行的将是“渲染到纹理”（render to texture）操作。如果渲染缓存对象的图像数据关联到帧缓存，opengl执行的将是“离线渲染”（offscreen rendering）。
+
+渲染缓存对象是GL_EXT_framebuffer_object中定义的新的一种存储类型。这用于渲染过程中存储单幅2维图像。下面的图1描述了FBO、纹理对象和渲染缓存对象之间的关系。
+
+![](/images/FBO纹理对象和渲染缓存对象之间的关系.jpeg)
+>图1 FBO、纹理对象和渲染缓存对象之间的关系
+
+ 从图中可以看出，FBO有多个颜色关联：(GL_COLOR_ATTACHMENT0_EXT,..., GL_COLOR_ATTACHMENTn_EXT), 一个深度关联(GL_DEPTH_ATTACHMENT_EXT)和一个模板关联 (GL_STENCIL_ATTACHMENT_EXT)。颜色关联的数目最少有一个，最大数目是与实体的显卡相关的，可以GL_MAX_COLOR_ATTACHMENTS_EXT查询得到。FBO采用多个颜色关联，这样可以同时将多个颜色缓存渲染（绘制）到多个FBO关联存储区，即“多渲染目标”MRT（multiple render target）。MRT可用GL_ARB_draw_buffers完成。
+
+> 注意：FBO本身并没有图像数据存储区，只有多个关联。
+
+ FBO提供了一种高效的切换机制：将前一个帧缓存关联图像从FBO分离，将一个新的可关联帧缓存图像与FBO关联。FBO对帧缓存关联图像的切换要比对FBO的切换速度更快。用glFramebufferTexture2DEXT()，可以进行二维纹理对象的切换，用glFramebufferRenderbufferEXT可切换渲染缓存对象。
+
+
+## FBO的生成
+
+FBO的生成过程与VBO的生成过程类似。
+
+```c
+glGenFramebuffersEXT()
+void glGenFramebuffersEXT(GLsizei n, GLuint* ids) void glDeleteFramebuffersEXT(GLsizei n, const GLuint* ids)
+```
+glGenFramebuffersEXT需要两个参数，一个是要生成的帧缓存个数，一个是存储帧缓存ID的地址指针。如果帧缓存的ID为0，表明为缺省的帧缓存，也即window系统生成的帧缓存。
+
+glDeleteFramebuffersExt可用于删除不再使用的FBO。
+
+```c
+glBindFramebufferEXT()
+void glBindFramebufferEXT(GLenum target, GLuint id)
+```
+
+ 一旦生成FBO，可用glBindFramebufferEXT来启用它。第一个参数target应为GL_FRAMEBUFFER_EXT,第二个参数为FBO的ID。如果不再使用FBO，应调用该函数，这时参数ID置为0。
+
+
+## 渲染缓存对象
+
+ 渲染缓存对象是新添加的，专门用于离线渲染。它允许将一个场景直接渲染到一个渲染缓存对象中，而不是渲染到纹理对象。渲染缓存对象是用于存储单幅图像的简单存储对象。该图像是按一种可渲染的内部格式存储。可以说，渲染缓存对象是存储OpenGL的逻辑缓存，它不具有像纹理那样的格式。
+
+```c
+glGenRenderbuffersEXT()
+void glGenRenderbufferEXT(GLsizei target, GLuint* ids)
+void glDeleteRenderbuffersEXT(GLsizei n, const GLuint* ids)
+```
+glGenRenderbuffersEXT一旦生成渲染缓存， 返回非零整数。
+
+```c
+glBindRenderbufferEXT()
+void glBindRenderbufferEXT(GLenum target, GLuint id)
+```
+和其它OpenGL对象一样，你需要在使用它之前对渲染缓存对象进行绑定。其中的target参数应为GL_RENDERBUFFER_EXT。
+
+```c
+glRenderbufferStorageEXT()
+void glBindRenderbufferEXT(GLenum target, GLuint id)
+```
+
+生成了渲染对象后，还需要分配空间存储数据。glRenderbufferStorageEXT用来完成这件事。该函数的第一个参数必须是GL_RENDERBUFFER_EXT。第二个参数可以是用于颜色的（如GL_RGB, GL_RGBA等等），用于深度的（GL_DEPTH_COMPOENT），用于模板的（GL_STENCIL_INDEX）。渲染缓存存储的图像其大小还是按像素的宽×高来计算，它不得大于常量GL_MAX_RENDERBUFFER_SIZE_EXT；否则会产生GL_INVALID_VALUE的错误。
+
+```c
+glGetRenderbufferParameterivEXT()
+void glGetRenderbufferParameterivEXT(GLenum target, GLenum param,
+GLint* value);
+```
+ 用glGetRenderbufferParameterivEXT可以得到当前渲染对象的属性参数。target必须为GL_RENDERBUFFER_EXT,第二个参数param从下面的常量中取，value为得到返回值的指针。
+
+```c
+  GL_RENDERBUFFER_WIDTH_EXT
+  GL_RENDERBUFFER_HEIGHT_EXT
+  GL_RENDERBUFFER_INTERNAL_FORMAT_EXT
+  GL_RENDERBUFFER_RED_SIZE_EXT
+  GL_RENDERBUFFER_GREEN_SIZE_EXT
+  GL_RENDERBUFFER_BLUE_SIZE_EXT
+  GL_RENDERBUFFER_ALPHA_SIZE_EXT
+  GL_RENDERBUFFER_DEPTH_SIZE_EXT
+  GL_RENDERBUFFER_STENCIL_SIZE_EXT
+```
+
+## 将图像与FBO关联
+
+FBO本身并没有存储任何图像，我们只是将帧缓存可关联图像（纹理和渲染对象）与FBO进行了关联。这种机制可以让我们在FBO中进行帧缓存可关联图像的快速切换。这样就用不着不必要地拷贝，也减少了内存消耗。比如说一个纹理可与多个FBO关联，这样它的图像存储区就能够让多个FBO共享。
+
+### 将一个纹理关联到FBO
+
+```c
+glFramebufferTexture2DEXT(GLenum target, GLenum attachmentPoint, GLenum textureTarget, GLuint textureId, GLint  level)
+```
+
+glFramebufferTexture2DEXT可将2D纹理图像关联到FBO上。第一个参数target必须为GL_FRAMEBUFFER_EXT。参数attachment为FBO上的关联点。FBO上有多个颜色关联点（GL_COLOR_ATTACHMENT0_EXT, ..., GL_COLOR_ATTACHMENTn_EXT），一个GL_DEPTH_ATTACHMENT_EXT和GL_STENCIL_ATTACHMENT_EXT。参数textureTarget大数多情况下为GL_TEXTURE_2D。参数textureId为纹理对象的ID号。参数level为关联的纹理的mipmap等级。
+
+如果textureId取0，则当前关联的纹理将与FBO分离。如果纹理对象被删除了，还它关联着一个FBO的话，该纹理图像会自动与其分离。如果它关联的是多个FBO，它删除时只与当前的FBO分离，不会与其它FBO分离。
+
+
+## 将一个渲染缓存图像关联到FBO
+
+```c
+glFramebufferRenderbufferEXT(GLenum target,
+GLenum attachmentPoint,
+GLenum renderbufferTarget,
+GLuint renderbufferId)
+```
+
+渲染缓存图像可用glFramebufferRenderbufferEXT，来与FBO关联。参数target和attachmentpoint和前一个函数glFramebufferTexture2DEXT一样。第三个函数必须为GL_RENDERBUFFER_EXT, 参数renderbufferId为渲染对象的Id。
+
+如果renderbufferId设为0，当前FBO中的渲染图像将与其分离。如果渲染对象删除时还与FBO关联着，那它会自动与当前的FBO分离，但不会与其它关联的FBO分离。
+
+
+## 检查FBO状态
+
+ 在图像（纹理或渲染缓冲）与FBO关联，在招待FBO的操作之前，都需要对FBO的状态进行检查。获取FBO状态函数为glCheckFramebufferStatusEXT。如果FBO不完整，那么绘制和读取的命令（glBegin(), glCopyTexImage2D()等）都会失败。
+
+
+GLenum glCheckFramebufferStatusEXT(GLenum target);
+glCheckFramebufferStatusEXT对当前帧缓存的参数和相关联的图像进行验证。注意该函数不能在glBegin()/glEnd()函数对中间使中。target参数必须为GL_FRAMEBUFFER_EXT。它返回一个非零的状态值。如果FBO通过了检查，则返回GL_FRAMEBUFFER_COMPLETE_EXT。
+
+**FBO必须满足以下条件：**
+
+关联图像的宽高不能为0；
+如果关联图像关联的是颜色关联点，那么图像必须为颜色可渲染的内部格式（如GL_RGBA,  GL_DEPTH_COMPONENT, GL_LUMINANCE等）；
+如果关联图像关联的是GL_DEPTH_ATTACHMENT_EXT，图像必须是深度可渲染的内部格式（GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT24_EXT等）。
+如果关联图像关联的是GL_STENCIL_ATTACHMENT_EXT，图像必须是模板可渲染的内部格式（GL_STENCIL_INDEX, GL_STENCIL_INDEX8_EXT等）。
+FBO必须至少有一个图像关联；
+所有关联到颜色关联点的图像必须使用同一个内部格式。
+注意，即使所有的条件都得到满足，opengl驱动程序可能也不支持某些内部格式和参数的组合。如果出现这种情况，glCheckFramebufferStatusEXT将返回GL_FRAMEBUFFER_UNSUPPORTED_EXT.
+
+
+**示例：渲染到纹理**
+
+有时，你可能需要生成动态的纹理，如做镜面效果、动态立方体/环境贴图、阴影等效果时。动态纹理
+可以通过将渲染的场影绘制到纹理上来完成这些效果。传统解决渲染到纹理的方法是将场景绘制到普通的帧缓存上，然后用glCopyTexSubImage2D拷贝帧缓存图像到纹理上。
+
+使用FBO，我们可以直接将场景绘制到纹理上，而用不着window系统提供的帧缓存。而且，我们可以减少数据拷贝（从帧缓存到纹理）的过程。
+
+例程中提供了用FBO和不用FBO来完成渲染到纹理的代码，以例比较它们的性能。除了性能上的优点，如果纹理分辩率大于无FBO模式下渲染窗口的大小，窗口区域外的部分将被裁剪，但FBO不会出现这种问题。你可以生成比显示窗口大得多的帧缓存图像。
+
+   以下代码在渲染循环启动之前，先对FBO和帧缓存可关联图像进行了设置（初始化）。程序中，不仅纹理图像关联到FBO，一个渲染缓存图像也关联到FBO的深度关联点。我们并没有实际用到这个深度缓存，只不过，FBO本身需要用它来做深度测试。我们如果没有把一个深度可渲染图像关联到FBO，那么可能会因为不能进行深度测试而无法进行成功渲染。如果渲染过程中需要模板测试，也可以在程序中加上可渲染图像与GL_STENCIL_ATTACHMENT_EXT关联。
+
+![](/images/fbo2.jpeg)
+渲染到纹理的过程和普通绘制过程一样。我们只需将渲染的目的地放在FBO即可。
+![](/images/fbo3.jpeg)
+
+注意，glGenerateMipmapEXT（）也是作为FBO扩展的一部分，用于在修改纹理图像的基级(base level)之后，显式生成mipmap。如果GL_GENERATE_MIPMAP设置为GL_TRUE,glTex{Sub}Image2D()和glCopyTex{Sub}Image2D()将激活自动mipmap的生成。然而，在纹理的基级修改后，FBO不会自动生成它的MIPMAP。这是因为FBO不调用glCopyTex{Sub}Image2D()来修改纹理。因此，glGenerateMipmapEXT()必须显式的调用来生成mipmap。
+
+
+
+参考文章
+http://blog.sina.com.cn/s/blog_4062094e0100alvv.html
+
+http://www.gamedev.net/reference/articles/article2331.asp
+
+http://www.physdev.com/articles/
+
+http://www.builder.com.cn/2008/0703/963021.shtml
+
+http://www.songho.ca/opengl/gl_fbo.html
