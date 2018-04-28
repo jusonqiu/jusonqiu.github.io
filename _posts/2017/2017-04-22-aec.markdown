@@ -1,0 +1,742 @@
+---
+layout: "post"
+title: "AEC"
+date: "2017-04-22 11:06"
+---
+
+# 一些专业名词
+
+- AEC(Adaptive Echo Control)回声消除回音器
+- AFC(Adaptive Feedback Control)自适应声反馈处理技术
+- ANC(Adaptive Noise Control)自适应背景降噪技术
+- AGC(Automatic Gain Control)自动增益控制技术
+
+理解上都可以在wiki上查找到相对于的解释，这里重点是站在android 音视频互动场景下解决回声消除的方案。
+
+# 回声消除方案
+
+在音视频互动场景下（直播连麦等），音视频回声消除的方案常见有：Android 系统自带的 `AcousticEchoCanceler`，Speex，WebRTC AEC 模块；
+
+## android 系统自带的 `AcousticEchoCanceler`
+
+[AcousticEchoCanceler](https://developer.android.google.cn/reference/android/media/audiofx/AcousticEchoCanceler.html) 基于 AudioEffect 类。官方的说明：
+
+>Acoustic Echo Canceler (AEC) is an audio pre-processor which removes the contribution of the signal received from the remote party from the captured audio signal.
+
+>AEC is used by voice communication applications (voice chat, video conferencing, SIP calls) where the presence of echo with significant delay in the signal received from the remote party is highly disturbing. AEC is often used in conjunction with noise suppression (NS).
+
+使用
+
+- 检查系统是否支持
+- 创建AudioRecorder，通过[getAudioSessionId()](https://developer.android.google.cn/reference/android/media/AudioRecord.html#getAudioSessionId() 获取sessionId
+- 创建 AEC，关联 sessionId
+- 播放 Audio，关联 sessionId
+
+```java
+
+  // #1
+if (android.os.Build.VERSION.SDK_INT >= 16 && AcousticEchoCanceler.isAvailable()){
+  // #2
+  AudioRecord audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, ...);
+  int sessionId = audioRecord.getAudioSessionId();
+  // #3
+  AcousticEchoCanceler canceler = AcousticEchoCanceler.create(sessionId);
+  canceler.setEnabled(true);
+  // #4
+  AudioTrack audioTrack = new AudioTrack(AudioManager.STREAM_VOICE_CALL, ..., sessionId);
+}
+
+```
+
+## Speex（http://www.speex.org/）
+
+分析一段代码
+
+```C++
+#include <assert.h>
+#include <jni.h>
+#include <string.h>
+#include <pthread.h>
+
+//Android native audio，使用openSL 播放音频
+#include <SLES/OpenSLES.h>
+#include <SLES/OpenSLES_Android.h>
+// for native asset manager
+#include <sys/types.h>
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
+#include <android/log.h>
+//speex 库引入
+#include <speex/speex_echo.h>
+#include <speex/speex_preprocess.h>
+#include <speex/speex_jitter.h>
+
+#include "ndk_Audio.h"
+#include "hello_clip.h";
+
+#define LOGINFO(x...) __android_log_print(ANDROID_LOG_INFO,"NativeAudio",x)
+
+// engine interfaces, opensl 引擎接口
+static SLObjectItf engineObject = NULL;
+static SLEngineItf engineEngine;
+// output mix interfaces
+static SLObjectItf outputMixObject = NULL;
+// buffer queue player interfaces 播放队列
+static SLObjectItf bqPlayerObject = NULL;
+static SLPlayItf bqPlayerPlay;
+static SLAndroidSimpleBufferQueueItf playerBufferQueue;
+static SLEffectSendItf bqPlayerEffectSend;
+static SLMuteSoloItf bqPlayerMuteSolo;
+static SLVolumeItf bqPlayerVolume;
+// recorder interfaces 录制接口
+static SLObjectItf recorderObject = NULL;
+static SLRecordItf recorderRecord;
+static SLAndroidSimpleBufferQueueItf recorderBufferQueue;
+// 5 seconds of recorded audio at 16 kHz mono, 16-bit signed little endian
+//#define RECORDER_FRAMES (16000 * 5)
+//static short recorderBuffer[RECORDER_FRAMES];
+static unsigned recorderSize = 0;
+static SLmilliHertz recorderSR;
+// pointer and size of the next player buffer to enqueue, and number of remaining buffers
+static short *nextBuffer;
+static unsigned nextSize;
+static int nextCount;
+///loopback
+static short doLoopback = 0;
+static SLuint32 rxBufCount = 2;
+static SLuint32 txBufCount = 2;
+static SLuint32 bufSizeInFrames = 320;
+static SLuint32 channels = 1;
+static SLuint32 sampleRate = 8000;
+static SLuint32 freeBufCount = 0;
+static SLuint32 bufSizeInBytes = 0;
+// buffers
+static char **rxBuffers;
+static char **txBuffers;
+static char **freeBuffers;
+// Buffer indices
+static SLuint32 rxFront;    // oldest recording
+static SLuint32 rxRear;     // next to be recorded
+static SLuint32 txFront;    // oldest playing
+static SLuint32 txRear;     // next to be played
+static SLuint32 freeFront;  // oldest free
+static SLuint32 freeRear;   // next to be freed
+
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+//end
+
+//speex
+int useSpeex=0;
+int filter_len;
+SpeexEchoState *echo_state;
+SpeexPreprocessState * preprocess_state;
+static char **aecBuffers;
+static int aecFront;
+static int aecRear;
+static int aecBufCount = 4;
+
+void printIndices() {
+ LOGINFO("rxFront : %d, rxRear : %d, txFront : %d, txRear : %d, freeFront : %d, freeRear : %d",
+      rxFront, rxRear, txFront, txRear, freeFront, freeRear);
+}
+
+void initSpeex() {
+ LOGINFO("initSpeex()");
+ filter_len = 5 * bufSizeInFrames;
+ echo_state = speex_echo_state_init(bufSizeInFrames, filter_len);
+ preprocess_state = speex_preprocess_state_init(bufSizeInFrames, sampleRate);
+ speex_preprocess_ctl(preprocess_state, SPEEX_PREPROCESS_SET_ECHO_STATE, echo_state);
+ speex_echo_ctl(echo_state, SPEEX_ECHO_SET_SAMPLING_RATE, &sampleRate);
+ int sizeInBytes = channels * bufSizeInFrames * sizeof(short);
+ // Initialize buffers
+ aecBuffers = (char **) calloc(aecBufCount+1, sizeof(char *));
+ unsigned j;
+ for (j = 0; j < aecBufCount; ++j) {
+  aecBuffers[j] = (char *) malloc(sizeInBytes);
+ }
+}
+
+void speexClean() {
+ if(NULL != echo_state) speex_echo_state_destroy(echo_state);
+ if(NULL != preprocess_state)speex_preprocess_state_destroy(preprocess_state);
+}
+
+// this callback handler is called every time a buffer finishes playing
+void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
+{
+  LOGINFO("bqPlayerCallback");
+  assert(bq == playerBufferQueue);
+  assert(NULL == context);
+
+  SLresult result;
+
+  if(doLoopback) {
+    pthread_mutex_lock(&mutex);
+    printIndices();
+   // Get the buffer that just finished playing
+    assert(txFront <= txBufCount);
+    assert(txRear <= txBufCount);
+    assert(txFront != txRear);
+    char *buffer = txBuffers[txFront];
+    if (++txFront > txBufCount) {
+      txFront = 0;
+  }
+  printIndices();
+  // First try to enqueue the free buffer for recording
+  result = (*recorderBufferQueue)->Enqueue(recorderBufferQueue, buffer, bufSizeInBytes);
+  if (SL_RESULT_SUCCESS == result) {
+     // There was room in the record queue, update our model of it
+     assert(rxFront <= rxBufCount);
+     assert(rxRear <= rxBufCount);
+     SLuint32 rxRearNext = rxRear+1;
+     if (rxRearNext > rxBufCount) {
+        rxRearNext = 0;
+     }
+     assert(rxRearNext != rxFront);
+     rxBuffers[rxRear] = buffer;
+     rxRear = rxRearNext;
+  } else {
+     // Here if record queue is full
+     assert(SL_RESULT_BUFFER_INSUFFICIENT == result);
+
+     // Instead enqueue the free buffer on the free queue
+     assert(freeFront <= freeBufCount);
+     assert(freeRear <= freeBufCount);
+     SLuint32 freeRearNext = freeRear+1;
+     if (freeRearNext > freeBufCount) {
+      freeRearNext = 0;
+     }
+     // There must always be room in the free queue
+     assert(freeRearNext != freeFront);
+     freeBuffers[freeRear] = buffer;
+     freeRear = freeRearNext;
+  }
+
+  printIndices();
+  pthread_mutex_unlock(&mutex);
+    } else {
+      // for streaming playback, replace this test by logic to find and fill the next buffer
+      if (--nextCount > 0 && NULL != nextBuffer && 0 != nextSize) {
+       SLresult result;
+       // enqueue another buffer
+       result = (*playerBufferQueue)->Enqueue(playerBufferQueue, nextBuffer, nextSize);
+       // the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
+       // which for this code example would indicate a programming error
+       assert(SL_RESULT_SUCCESS == result);
+      }
+    }
+}
+
+// this callback handler is called every time a buffer finishes recording
+void bqRecorderCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
+{
+ LOGINFO("bqRecorderCallback");
+
+    assert(bq == recorderBufferQueue);
+    assert(NULL == context);
+
+    SLresult result;
+
+ if(doLoopback) {
+
+  pthread_mutex_lock(&mutex);
+  printIndices();
+  // We should only be called when a recording buffer is done
+  assert(rxFront <= rxBufCount);
+  assert(rxRear <= rxBufCount);
+  assert(rxFront != rxRear);
+  char *buffer = rxBuffers[rxFront];
+
+  // Remove buffer from record queue
+  if (++rxFront > rxBufCount) {
+   rxFront = 0;
+  }
+  printIndices();
+
+  if(useSpeex){
+   spx_int16_t *rec = buffer;
+   speex_echo_capture(echo_state, rec, buffer);
+  }
+
+  // Enqueue the just-filled buffer for the player
+  result = (*playerBufferQueue)->Enqueue(playerBufferQueue, buffer, bufSizeInBytes);
+
+  if(useSpeex){
+   speex_echo_playback(echo_state, buffer);
+  }
+
+  if (SL_RESULT_SUCCESS == result) {
+
+   // There was room in the play queue, update our model of it
+   assert(txFront <= txBufCount);
+   assert(txRear <= txBufCount);
+   SLuint32 txRearNext = txRear+1;
+   if (txRearNext > txBufCount) {
+    txRearNext = 0;
+   }
+   assert(txRearNext != txFront);
+   txBuffers[txRear] = buffer;
+   txRear = txRearNext;
+  } else {
+
+   // Here if record has a filled buffer to play, but play queue is full.
+   assert(SL_RESULT_BUFFER_INSUFFICIENT == result);
+   write(1, "?", 1);
+
+   // We could either try again later, or discard. For now we discard and re-use buffer.
+   // Enqueue this same buffer for the recorder to fill again.
+   result = (*recorderBufferQueue)->Enqueue(recorderBufferQueue, buffer, bufSizeInBytes);
+   assert(SL_RESULT_SUCCESS == result);
+
+   // Update our model of the record queue
+   SLuint32 rxRearNext = rxRear+1;
+   if (rxRearNext > rxBufCount) {
+    rxRearNext = 0;
+   }
+   assert(rxRearNext != rxFront);
+   rxBuffers[rxRear] = buffer;
+   rxRear = rxRearNext;
+  }
+  printIndices();
+
+  pthread_mutex_unlock(&mutex);
+ } else {
+
+ }
+
+}
+
+void createEngine(){
+ SLresult result;
+
+ // create engine
+ result = slCreateEngine(&engineObject, 0, NULL, 0, NULL, NULL);
+ assert(SL_RESULT_SUCCESS == result);
+ LOGINFO("createEngine::slCreateEngine : %d", result);
+
+ // realize the engine
+ result = (*engineObject)->Realize(engineObject, SL_BOOLEAN_FALSE);
+ assert(SL_RESULT_SUCCESS == result);
+ LOGINFO("createEngine::Realize : %d", result);
+
+ // get the engine interface, which is needed in order to create other objects
+ result = (*engineObject)->GetInterface(engineObject, SL_IID_ENGINE, &engineEngine);
+ assert(SL_RESULT_SUCCESS == result);
+ LOGINFO("createEngine::GetInterface-SL_IID_ENGINE : %d", result);
+}
+
+
+void createOutputMix(){
+ SLresult result;
+
+ // create output mix
+ /*const SLInterfaceID ids[1] = {SL_IID_ENVIRONMENTALREVERB};
+ const SLboolean req[1] = {SL_BOOLEAN_FALSE};*/
+ result = (*engineEngine)->CreateOutputMix(engineEngine, &outputMixObject, 0, NULL, NULL);
+ assert(SL_RESULT_SUCCESS == result);
+ LOGINFO("createEngine::CreateOutputMix : %d", result);
+
+ // realize the output mix
+ result = (*outputMixObject)->Realize(outputMixObject, SL_BOOLEAN_FALSE);
+ assert(SL_RESULT_SUCCESS == result);
+ LOGINFO("createEngine::Realize : %d", result);
+}
+
+
+void createPlayer() {
+    SLresult result;
+
+    // configure audio source
+    SLDataLocator_AndroidSimpleBufferQueue loc_bufq = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, rxBufCount};
+    SLDataFormat_PCM format_pcm = {SL_DATAFORMAT_PCM, channels, SL_SAMPLINGRATE_8,
+        SL_PCMSAMPLEFORMAT_FIXED_16, SL_PCMSAMPLEFORMAT_FIXED_16,
+        (channels == 1 ? SL_SPEAKER_FRONT_CENTER :
+                (SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT))
+        , SL_BYTEORDER_LITTLEENDIAN};
+    SLDataSource audioSrc = {&loc_bufq, &format_pcm};
+
+    // configure audio sink
+    SLDataLocator_OutputMix loc_outmix = {SL_DATALOCATOR_OUTPUTMIX, outputMixObject};
+    SLDataSink audioSnk = {&loc_outmix, NULL};
+
+    // create audio player
+    const SLInterfaceID ids[3] = {SL_IID_BUFFERQUEUE, SL_IID_EFFECTSEND,
+            /*SL_IID_MUTESOLO,*/ SL_IID_VOLUME};
+    const SLboolean req[3] = {SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE,
+            /*SL_BOOLEAN_TRUE,*/ SL_BOOLEAN_TRUE};
+    result = (*engineEngine)->CreateAudioPlayer(engineEngine, &bqPlayerObject, &audioSrc, &audioSnk,
+            3, ids, req);
+
+    LOGINFO("createBufferQueueAudioPlayer::CreateAudioPlayer : %d", result);
+
+    assert(SL_RESULT_SUCCESS == result);
+
+    // realize the player
+    result = (*bqPlayerObject)->Realize(bqPlayerObject, SL_BOOLEAN_FALSE);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createBufferQueueAudioPlayer::Realize : %d", result);
+
+    // get the play interface
+    result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_PLAY, &bqPlayerPlay);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createBufferQueueAudioPlayer::GetInterface-SL_IID_PLAY : %d", result);
+
+    // get the buffer queue interface
+    result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_BUFFERQUEUE,
+            &playerBufferQueue);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createBufferQueueAudioPlayer::GetInterface-SL_IID_BUFFERQUEUE : %d", result);
+
+    // register callback on the buffer queue
+    result = (*playerBufferQueue)->RegisterCallback(playerBufferQueue, bqPlayerCallback, NULL);
+    assert(SL_RESULT_SUCCESS == result);
+
+    LOGINFO("createBufferQueueAudioPlayer::RegisterCallback : %d", result);
+
+    // get the effect send interface
+    result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_EFFECTSEND,
+            &bqPlayerEffectSend);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createBufferQueueAudioPlayer::GetInterface-SL_IID_EFFECTSEND : %d", result);
+
+#if 0   // mute/solo is not supported for sources that are known to be mono, as this is
+    // get the mute/solo interface
+    result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_MUTESOLO, &bqPlayerMuteSolo);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createBufferQueueAudioPlayer::GetInterface-SL_IID_MUTESOLO : %d", result);
+#endif
+
+    // get the volume interface
+    result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME, &bqPlayerVolume);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createBufferQueueAudioPlayer::GetInterface-SL_IID_VOLUME : %d", result);
+
+    if(!doLoopback) {
+     // set the player's state to playing
+  result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
+  assert(SL_RESULT_SUCCESS == result);
+  LOGINFO("createBufferQueueAudioPlayer::SetPlayState-SL_PLAYSTATE_PLAYING : %d", result);
+
+    }
+
+
+}
+
+
+short createRecorder() {
+
+ SLresult result;
+
+ // configure audio source
+ SLDataLocator_IODevice loc_dev = {SL_DATALOCATOR_IODEVICE, SL_IODEVICE_AUDIOINPUT, SL_DEFAULTDEVICEID_AUDIOINPUT, NULL};
+ SLDataSource audioSrc = {&loc_dev, NULL};
+
+ // configure audio sink
+ SLDataLocator_AndroidSimpleBufferQueue loc_bq = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, txBufCount};
+ /*SLDataFormat_PCM format_pcm = {SL_DATAFORMAT_PCM, channels, SL_SAMPLINGRATE_16, SL_PCMSAMPLEFORMAT_FIXED_16, SL_PCMSAMPLEFORMAT_FIXED_16,
+   SL_SPEAKER_FRONT_CENTER, SL_BYTEORDER_LITTLEENDIAN};*/
+ SLDataFormat_PCM format_pcm = {SL_DATAFORMAT_PCM, channels, SL_SAMPLINGRATE_8,
+         SL_PCMSAMPLEFORMAT_FIXED_16, SL_PCMSAMPLEFORMAT_FIXED_16,
+         (channels == 1 ? SL_SPEAKER_FRONT_CENTER :
+                 (SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT))
+         , SL_BYTEORDER_LITTLEENDIAN};
+ SLDataSink audioSnk = {&loc_bq, &format_pcm};
+
+ // create audio recorder
+ // (requires the RECORD_AUDIO permission)
+ const SLInterfaceID id[1] = {SL_IID_ANDROIDSIMPLEBUFFERQUEUE};
+ const SLboolean req[1] = {SL_BOOLEAN_TRUE};
+ result = (*engineEngine)->CreateAudioRecorder(engineEngine, &recorderObject, &audioSrc,
+   &audioSnk, 1, id, req);
+ LOGINFO("createAudioRecorder::CreateAudioRecorder : %d", result);
+
+ if (SL_RESULT_SUCCESS != result) {
+  return 0;
+ }
+
+ // realize the audio recorder
+ result = (*recorderObject)->Realize(recorderObject, SL_BOOLEAN_FALSE);
+ if (SL_RESULT_SUCCESS != result) {
+  return 0;
+ }
+
+ LOGINFO("createAudioRecorder::CreateAudioRecorder : %d", result);
+
+
+
+    // get the record interface
+    result = (*recorderObject)->GetInterface(recorderObject, SL_IID_RECORD, &recorderRecord);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createAudioRecorder::GetInterface-SL_IID_RECORD : %d", result);
+
+    // get the buffer queue interface
+    result = (*recorderObject)->GetInterface(recorderObject, SL_IID_ANDROIDSIMPLEBUFFERQUEUE,
+            &recorderBufferQueue);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createAudioRecorder::GetInterface-SL_IID_ANDROIDSIMPLEBUFFERQUEUE : %d", result);
+
+    // register callback on the buffer queue
+    result = (*recorderBufferQueue)->RegisterCallback(recorderBufferQueue, bqRecorderCallback,
+            NULL);
+    assert(SL_RESULT_SUCCESS == result);
+    LOGINFO("createAudioRecorder::RegisterCallback : %d", result);
+
+    // Enqueue some empty buffers for the recorder
+    if( doLoopback == 1) {
+     unsigned j;
+  for (j = 0; j < rxBufCount; ++j) {
+
+   // allocate a free buffer
+   assert(freeFront != freeRear);
+   char *buffer = freeBuffers[freeFront];
+   if (++freeFront > freeBufCount) {
+    freeFront = 0;
+   }
+
+   // put on record queue
+   SLuint32 rxRearNext = rxRear + 1;
+   if (rxRearNext > rxBufCount) {
+    rxRearNext = 0;
+   }
+   assert(rxRearNext != rxFront);
+   rxBuffers[rxRear] = buffer;
+   rxRear = rxRearNext;
+   result = (*recorderBufferQueue)->Enqueue(recorderBufferQueue,
+    buffer, bufSizeInBytes);
+   assert(SL_RESULT_SUCCESS == result);
+  }
+    }
+
+    if(!doLoopback) {
+     // Kick off the recorder
+  result = (*recorderRecord)->SetRecordState(recorderRecord, SL_RECORDSTATE_RECORDING);
+  assert(SL_RESULT_SUCCESS == result);
+    }
+
+
+    return 1;
+
+}
+
+void startPlayNRecord() {
+ SLresult result;
+ result = (*recorderRecord)->SetRecordState(recorderRecord, SL_RECORDSTATE_RECORDING);
+ assert(SL_RESULT_SUCCESS == result);
+ result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
+ assert(SL_RESULT_SUCCESS == result);
+}
+
+void Java_ndk_Audio_createEngine
+  (JNIEnv* env, jclass clazz)
+{
+    createEngine();
+
+    createOutputMix();
+
+    initSpeex();
+
+}
+
+void Java_ndk_Audio_createBufferQueueAudioPlayer
+  (JNIEnv* env, jclass clazz){
+
+ createPlayer();
+
+}
+
+jboolean Java_ndk_Audio_createAudioRecorder (JNIEnv* env, jclass clazz)
+{
+ return (createRecorder() == 0) ? JNI_TRUE : JNI_FALSE;
+}
+
+void Java_ndk_Audio_startRecording(JNIEnv* env, jclass clazz)
+{/*
+    SLresult result;
+
+    // in case already recording, stop recording and clear buffer queue
+    result = (*recorderRecord)->SetRecordState(recorderRecord, SL_RECORDSTATE_STOPPED);
+    assert(SL_RESULT_SUCCESS == result);
+    result = (*recorderBufferQueue)->Clear(recorderBufferQueue);
+    assert(SL_RESULT_SUCCESS == result);
+
+    // the buffer is not valid for playback yet
+    recorderSize = 0;
+
+    // enqueue an empty buffer to be filled by the recorder
+    // (for streaming recording, we would enqueue at least 2 empty buffers to start things off)
+    result = (*recorderBufferQueue)->Enqueue(recorderBufferQueue, recorderBuffer,
+            RECORDER_FRAMES * sizeof(short));
+    // the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
+    // which for this code example would indicate a programming error
+    assert(SL_RESULT_SUCCESS == result);
+
+    // start recording
+    result = (*recorderRecord)->SetRecordState(recorderRecord, SL_RECORDSTATE_RECORDING);
+    assert(SL_RESULT_SUCCESS == result);
+
+*/}
+
+
+void Java_ndk_Audio_startPlaying (JNIEnv* env, jclass clazz) {/*
+ if (recorderSR == SL_SAMPLINGRATE_16) {
+  unsigned i;
+  for (i = 0; i < recorderSize; i += 2 * sizeof(short)) {
+   recorderBuffer[i >> 2] = recorderBuffer[i >> 1];
+  }
+  recorderSR = SL_SAMPLINGRATE_8;
+  recorderSize >>= 1;
+ }
+ nextBuffer = recorderBuffer;
+ nextSize = recorderSize;
+
+ nextCount = 2;
+ if (nextSize > 0) {
+  // here we only enqueue one buffer because it is a long clip,
+  // but for streaming playback we would typically enqueue at least 2 buffers to start
+  SLresult result;
+  result = (*playerBufferQueue)->Enqueue(playerBufferQueue, nextBuffer, nextSize);
+  if (SL_RESULT_SUCCESS != result) {
+  }
+ }
+*/}
+
+
+void lpPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
+{
+ LOGINFO("lpPlayerCallback");
+    assert(bq == playerBufferQueue);
+    assert(NULL == context);
+
+}
+
+// this callback handler is called every time a buffer finishes recording
+void lpRecorderCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
+{
+ LOGINFO("lpRecorderCallback");
+
+    assert(bq == recorderBufferQueue);
+    assert(NULL == context);
+
+}
+
+void Java_ndk_Audio_startLoopback (JNIEnv* env, jclass clazz)
+{
+
+ if(useSpeex) initSpeex();
+
+ doLoopback=1;
+
+ freeBufCount = rxBufCount + txBufCount;
+ bufSizeInBytes = channels * bufSizeInFrames * sizeof(short);
+
+ // Initialize free buffers
+ freeBuffers = (char **) calloc(freeBufCount+1, sizeof(char *));
+ unsigned j;
+ for (j = 0; j < freeBufCount; ++j) {
+  freeBuffers[j] = (char *) malloc(bufSizeInBytes);
+ }
+ freeFront = 0;
+ freeRear = freeBufCount;
+ freeBuffers[j] = NULL;
+
+  // Initialize record queue
+ rxBuffers = (char **) calloc(rxBufCount+1, sizeof(char *));
+ rxFront = 0;
+ rxRear = 0;
+
+ // Initialize play queue
+ txBuffers = (char **) calloc(txBufCount+1, sizeof(char *));
+ txFront = 0;
+ txRear = 0;
+
+ printIndices();
+
+ SLresult result;
+
+ createEngine();
+
+ createOutputMix();
+
+ createPlayer();
+
+ createRecorder();
+
+ startPlayNRecord();
+
+ do {
+  usleep(1000);
+  write(1, ".", 1);
+  SLBufferQueueState playerBQState;
+  result = (*playerBufferQueue)->GetState(playerBufferQueue, &playerBQState);
+  assert(SL_RESULT_SUCCESS == result);
+  SLAndroidSimpleBufferQueueState recorderBQState;
+  result = (*recorderBufferQueue)->GetState(recorderBufferQueue, &recorderBQState);
+  assert(SL_RESULT_SUCCESS == result);
+ } while (doLoopback == 1);
+
+ speexClean();
+}
+
+void Java_ndk_Audio_stopLoopback (JNIEnv* env, jclass clazz)
+{
+  doLoopback = 0;
+}
+
+void Java_ndk_Audio_clean(JNIEnv* env, jclass clazz) {
+   if (NULL != bqPlayerObject) {
+    (*bqPlayerObject)->Destroy(bqPlayerObject);
+   }
+   if (NULL != recorderObject) {
+    (*recorderObject)->Destroy(recorderObject);
+   }
+   (*outputMixObject)->Destroy(outputMixObject);
+   (*engineObject)->Destroy(engineObject);
+}
+
+
+void Java_ndk_Audio_useSpeex (JNIEnv* env, jclass clazz, jint use) {
+  useSpeex = use;
+}
+```
+
+# 使用 webRTC AEC 模块
+
+```C++
+AudioProcessing* apm = AudioProcessing::Create(0);
+apm->set_sample_rate_hz(32000);
+Super-wideband processing.
+
+// Mono capture and stereo render.
+apm->set_num_channels(1, 1);
+apm->set_num_reverse_channels(2);
+apm->high_pass_filter()->Enable(true);
+apm->echo_cancellation()->enable_drift_compensation(false);
+apm->echo_cancellation()->Enable(true);
+apm->noise_reduction()->set_level(kHighSuppression);
+apm->noise_reduction()->Enable(true);
+apm->gain_control()->set_analog_level_limits(0, 255);
+apm->gain_control()->set_mode(kAdaptiveAnalog);
+apm->gain_control()->Enable(true);
+apm->voice_detection()->Enable(true);
+
+// Start a voice call...
+// ... Render frame arrives bound for the audio HAL ...
+apm->AnalyzeReverseStream(render_frame);
+
+// ... Capture frame arrives from the audio HAL ...
+// Call required set_stream_ functions.
+apm->set_stream_delay_ms(delay_ms);
+apm->gain_control()->set_stream_analog_level(analog_level);
+apm->ProcessStream(capture_frame);
+// Call required stream_ functions.
+analog_level = apm->gain_control()->stream_analog_level();
+has_voice = apm->stream_has_voice();
+
+// Repeate render and capture processing for the duration of the call...
+// Start a new call...
+apm->Initialize();
+
+// Close the application...
+AudioProcessing::Destroy(apm);
+apm = NULL;
+```
