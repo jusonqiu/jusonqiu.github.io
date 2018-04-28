@@ -349,3 +349,7 @@ Info Object[Object]:AMF类型的Object必定包含一个参数”code”,String�
 </pre>
 
 之后就可以发布元数据、音频、视频类型的Chunk了，其Message Stream Id设置为createStream命令获得的stream ID
+
+## 参考
+
+- [https://www.jianshu.com/p/99d2e60ddec9](https://www.jianshu.com/p/99d2e60ddec9)
