@@ -1,0 +1,101 @@
+---
+layout: "post"
+title: "PBO"
+date: "2017-08-28 12:43"
+---
+
+`PBO`, 即 Pixel Buffer Object 也是用于GPU的扩展（ARB_vertex_buffer_object）。这里的缓存当然就是GPU的缓存。PBO与VBO扩展类似，只不过它存储的是像素数据而不是顶点数据。PBO借用了VBO框架和所有API函数形式，并加了上两个"target"标志。这两个标识是：
+
+```c
+GL_PIXEL_PACK_BUFFER_ARB //将像素数据传给PBO
+GL_PIXEL_UNPACK_BUFFER_ARB //从PBO得到像素数据
+```
+
+这里的“pack”还是“unpack”，可分别理解为“传给”和“得到”。它们也都可以统一理解为“拷贝”，也就是像素数据的“传递”。
+
+>比如说，glReadPixel就是数据从帧缓存（framebuffer）到内存（memory），可理解为“pack”；glDrawPixel是从内存到帧缓存，可理解为“unpack”；glGetTexImage是从纹理对象到内存，可理解为“pack”；glTexImage2d从内存（memory）到纹理对象（texture object），可理解为“unpack”。
+
+下图是PBO与Framebuffer和Text对象之间的传递。
+
+![PBO与Framebuffer和Text对象之间的传递](/images/pbo_01.jpeg)
+
+使用PBO的好处是快速的像素数据传递，它采用了一种叫DMA（Direct Memory Access）的技术，无需CPU介入。另一个PBO的优点是，这种DMA是异步的。我们可以通过下面两张图来比较使用PBO的与传统的纹理传递的过程。
+
+图2是用传统的方法从图像源（如图像文件或视频）载入图像数据到纹理对象的过程。像素数据首先存到系统内存中，接着使用glTexImage2D将数据从系统内存拷贝到纹理对象。包含的两个子过程均需要有CPU执行。而从图3中，我们可以看到像素数据直接载入到PBO中，这个过程仍需要CPU来执行，但是从数据从PBO到纹理对象的过程则由GPU来执行DMA，而不需要CPU参与。而且opengl可安排异步DMA，不必马上进行像素数据的传递。因此，相比而言，图3中的glTexImage2D立即返回而不是马上执行，这样CPU可以执行其它的操作而不需要等待像素数据传递的结束。
+
+![不使用PBO的纹理载入](/images/pbo_02.jpeg)
+图2 不使用PBO的纹理载入
+
+![使用PBO的纹理载入](/images/pbo_03.jpeg)
+图3 使用PBO的纹理载入
+
+```c
+GL_PIXEL_PACK_BUFFER_ARB //用于将像素数据从opengl传递给应用程序，
+GL_PIXEL_UNPACK_BUFFER_ARB //则是将像素数据从应用程序传递给opengl。
+```
+
+## 生成PBO
+
+ 生成PBO分成3步：
+
+ 1. 用glGenBuffersARB()生成缓存对象；
+
+ 2. 用glBindBufferARB()绑定缓存对象；
+
+ 3. 用glBufferDataARB()将像素数据拷贝到缓存对象。
+
+ 如果在glBufferDataARB函数中将一个NULL的指针给源数组，PBO只会为之分配一个给定大小的内存空间。glBufferDataARB的另一个参数是关于PBO的性能参数（hint)，表明缓存对象如何使用。该参数取GL_STREAM_DRAW_ARB表明是载入，GL_STREAM_READ_ARB表明是异步帧缓存读出。
+
+
+## 映射PBO
+
+  PBO提供了一种将opengl控制的缓存对象与客户端地址空间进行内存映射的机制。所以客户端可通过glMapBufferARB()和glUnmapbufferARB就可以修改缓存对象的部分或整个数据。
+
+```c
+void* glMapBufferARB(GLenum target, GLenum access);
+GLboolean glUnmapBufferARB(GLenum target);
+```
+>glMapBufferARB 返回缓存对象的指针。参数target取GL_PIXEL_PACK_BUFFER_ARB或GL_PIXEL_UNPACK_BUFFER_ARB，参数access是能对映射缓存的操作，可取GL_READ_ONLY_ARB、GL_WRITE_ONLY_ARB和GL_READ_WRITE_ARB，分别表明可从PBO读、可向PBO写，可从PBO读也可向PBO写。
+
+要注意：如果GPU正在对缓存对象进行操作，glMapBufferARB不会返回缓存对象直到GPU结束了对缓存对象的处理。为了避免等待，在调用glMapBufferARB之前，先调用glBufferDataARB（用NULL指针作为参数），这时OpenGL将丢弃老的缓存对象，为新的缓存对象分配空间。
+
+在客户端使用PBO后，应调用glUnmapBufferARB来取消映射。glUnmapBufferARB返回GL_TRUE表明成功，否则返回GL_FALSE。
+
+## Demo
+
+例子程序[pboUnpack.zip](http://www.songho.ca/opengl/files/pboUnpack.zip)使用了不同方式来比较将纹理传给OpenGL的模式：
+
+* 使用一个PBO；
+* 使用两个PBO；
+* 不使用PBO；
+
+通过按空格键，可以不同模式间切换。
+
+在PBO模式下，每帧的纹理源(像素)都是在映射PBO状态下直接写进去的。再通过调用glTexSubImage2D将PBO中的像素传递给纹理对象。通过使用纹理对象可以在PBO和纹理对象间进行异步DMA传递。它能大大提高像素传递的性能。
+由于glTexSubImage2D立即返回，因此CPU能够直接进行其它工作，无需等待实际的像素传递。
+
+![图4 两个PBO更新纹理](/images/pbo_04.jpeg)
+图4 两个PBO更新纹理
+
+为了将像素传递的性能最大化，可以使用多个PBO对象。图4中表明同时使用了两个PBO。在glTexSubImage2D将像素数据从PBO拷贝出来的同时，另一份像素数据写进了另一个PBO。
+在第n帧时，PBO1用于glTexSubImage2D，而PBO2用于生成一个新的纹理对象了。再到n+1帧时，两个PBO则互换了角色。由于异步DMA传递，像素数据的更新和拷贝过程可同时进行，即CPU将纹理源更新到PBO，同时GPU将从另一PBO中拷贝出纹理。
+
+![pbo_05](/images/pbo_05.jpeg)
+
+例子程序pboPack.zip从窗口的左边读出（pack）像素数据到PBO，在更改它的亮度后，把它在窗口的右边绘制出来。通过按空格键，可以看glReadPixels的性能。
+
+传统使用glReadPixels将阻塞渲染管道（流水线），直到所有的像素数据传递完成，才会将控制权交还给应用程序。相反，使用PBO的glReadPixels可以调度异步DMA传递，能够立即返回而不用等待。因此，CPU可以在OpenGL(GPU)传递像素数据的时候进行其它处理。
+
+![bpo_06](/images/pbo_06.jpeg)
+
+例子程序也使用了两个PBO，在第n帧时，应用帧缓存读出像素数据到PBO1中，同时在PBO中对像素数据进行处理。读与写的过程可同时进行，是因为，在调用glReadPixels时立即返回了，而CPU立即处理PBO2而不会有延迟。在下一帧时，PBO1和PBO2的角色互换。
+
+![pbo_07](/images/pbo_07.jpeg)
+
+
+## 参考文章
+
+0. http://blog.sina.com.cn/s/blog_4062094e0100alvt.html
+1. http://www.songho.ca/opengl/gl_pbo.html
+2. http://hacksoflife.blogspot.com/2006/10/vbos-pbos-and-fbos.html
+3. http://www.paulsprojects.net/opengl/rtotex/rtotex.html
