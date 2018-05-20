@@ -59,7 +59,7 @@ frame, picture 中任何一种，nal_ref_idc != 0; According to the Recommendati
 
 ## Frame Type
 
-- I Frame: 关键帧，包含一张完整的图像信息；帧内预测。
-- IDR Frame: 关键帧，一个 GoP 的首帧，解码器会在IDR帧位置刷新，使 DPB （DecodedPictureBuffer）清空，重新计算新的系列开始，避免了错误传播。<span style="color: red">对于IDR帧来说，在IDR帧之后的所有帧都不能引用任何IDR帧之前的帧的内容，与此相反，对于普通的I-帧来说，位于其之后的B-和P-帧可以引用位于普通I-帧之前的I-帧。</span>
-- P Frame
-- B Frame
+- **I Frame**  关键帧，包含一张完整的图像信息；帧内预测。
+- **IDR Frame**  关键帧，一个 GoP 的首帧，解码器会在IDR帧位置刷新，使 DPB （DecodedPictureBuffer）清空，重新计算新的系列开始，避免了错误传播。<span style="color: red">对于IDR帧来说，在IDR帧之后的所有帧都不能引用任何IDR帧之前的帧的内容，与此相反，对于普通的I-帧来说，位于其之后的B-和P-帧可以引用位于普通I-帧之前的I-帧。</span>
+- **P Frame** 前向预测，参考前面的I帧或者P帧
+- **B Frame** 双向预测，同时参考前后向的I帧或者P帧

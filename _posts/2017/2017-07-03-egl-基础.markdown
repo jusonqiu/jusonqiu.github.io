@@ -1,0 +1,160 @@
+---
+layout: "post"
+title: "EGL 基础"
+date: "2018-07-03 15:28"
+---
+
+## **OpenGL基本原理**
+
+**OpenGL是将用数学语言和色彩等信息描述的三维空间物体通过计算转换成二维图像并显示出来的程序库。**
+
+三维空间中的对象被描述成一系列的顶点（用来定义几何对象）或像素（用来定义图像）。
+OpenGL对数据进行几个步骤的处理将其转换成像素，这些像素存放帧缓冲区中形成最终需要的图形。
+
+## **OpenGL 纹理介绍**
+
+OpenGL 中的纹理可以用来表示图像、照片、甚至由一个数学算法生成的分形数据。每个二维的纹理都由许多小的纹理元素组成。要使用纹理，最常用的方式是直接从一个图像文件加载数据。其中需要注意的是 OpenGL要求纹理的高度和宽度都必须是2的n次方大小，只有满足这个条件，这个纹理图片才是有效的。
+
+比如绘制一面砖墙，就可以用一幅真实的砖墙图像或照片作为纹理贴到一个矩形上，这样，一面逼真的砖墙就画好了。如果不用纹理映射的方法，则墙上的每一块砖都必须作为一个独立的多边形来画。另外，纹理映射能够保证在变换多边形时，多边形上的纹理图案也随之变化。例如，以透视投影方式观察墙面时，离视点远的砖块的尺寸就会缩小，而离视点较近的就会大些。此外，纹理映射也常常运用在其他一些领域，如飞行仿真中常把一大片植被的图像映射到一些大多边形上用以表示地面，或用大理石、木材、布匹等自然物质的图像作为纹理映射到多边形上表示相应的物体。
+
+最基本的执行纹理映射所需的步骤：
+1）定义纹理
+2）控制滤波
+3）说明映射方式
+4）绘制场景，给出顶点的纹理坐标和几何坐标。
+
+## **OpenGL坐标系之间的转换 :**
+
+http://blog.csdn.net/sac761/article/details/52179585
+
+## **光栅化**
+
+光栅化（Rasterize/rasteriztion）。这个词儿Adobe官方翻译成栅格化或者像素化。没错，就是把矢量图形转化成像素点儿的过程。我们屏幕上显示的画面都是由像素组成，而三维物体都是点线面构成的。要让点线面，变成能在屏幕上显示的像素，就需要Rasterize这个过程。就是从矢量的点线面的描述，变成像素的描述。前面是告诉计算机我有一个圆形，后面就是计算机把圆形转换成可以显示的像素点。这个过程就是Rasterize。
+
+## **渲染管线**
+
+渲染管线（Pipeline）这个翻译尤其不接地气，简直就是直译（pipe管子line线路）。Pipeline是输送管道的意思。**其实是指三维渲染的过程中显卡执行的、从几何体到最终渲染图像的、数据传输处理计算的过程。**
+
+## **着色器**
+
+着色器（Shader）这个翻译的挺好。画画的时候我们经常有这么一个过程：先打线稿，再上色。着色器就是用来做这个工作的。
+
+**通常着色器分两种：**
+1顶点着色器（vertex shader）这个是告诉电脑如何打线稿的——如何处理顶点、法线等的数据的小程序。
+2片面着色器（fragment shader）这个是告诉电脑如何上色的——如何处理光、阴影、遮挡、环境等等对物体表面的影响，最终生成一副图像的小程序。
+采用了这两种着色器小程序 的 数据传输处理计算的渲染过程，称之为 可编程管线。
+
+## **正交投影VS透视投影**
+
+在计算机三维图像中，投影可以看作是一种将三维坐标变换为二维坐标的方法，常用到的有正交投影和透视投影。
+正交投影多用于三维健模，这样不会因为投影而改变物体比例。透视投影则由于和人的视觉系统相似，多用于在二维平面中对三维世界的呈现。
+
+**正交投影**
+投影线垂直于投影面的投影属于正交投影 ，属于平行投影的一种。
+
+**透视投影**
+透视投影（Perspective Projection）是为了获得接近真实三维物体的视觉效果而在二维的纸或者画布平面上绘图或者渲染的一种方法，也称为透视图[1] 。它具有消失感、距离感、相同大小的形体呈现出有规律的变化等一系列的透视特性，能逼真地反映形体的空间形象。透视投影通常用于动画、视觉仿真以及其它许多具有真实性反映的方面。
+
+## **透视除法**
+
+http://www.jianshu.com/p/7e701d7bfd79
+
+## **视锥体与透视投影矩阵**
+
+http://www.cnblogs.com/graphics/archive/2012/07/25/2582119.html
+
+## **OpenGL ES 三种类型修饰 uniform attribute varying**
+
+**1.uniform变量**
+uniform变量是外部application程序传递给（vertex和fragment）shader的变量。因此它是application通过
+
+函数glUniform**（）函数赋值的。在（vertex和fragment）shader程序内部，uniform变量就像是C语言里面
+
+的常量（const ），它不能被shader程序修改。（shader只能用，不能改）
+
+如果uniform变量在vertex和fragment两者之间声明方式完全一样，则它可以在vertex和fragment共享使用。
+
+（相当于一个被vertex和fragment shader共享的全局变量）
+
+uniform变量一般用来表示：变换矩阵，材质，光照参数和颜色等信息。
+
+以下是例子：
+
+
+```c
+uniform mat4 viewProjMatrix; //投影+视图矩阵
+uniform mat4 viewMatrix;        //视图矩阵
+uniform vec3 lightPosition;     //光源位置
+```
+
+**2.attribute变量**
+attribute变量是只能在vertex shader中使用的变量。（它不能在fragment shader中声明attribute变量，
+
+也不能被fragment shader中使用）
+
+一般用attribute变量来表示一些顶点的数据，如：顶点坐标，法线，纹理坐标，顶点颜色等。
+
+在application中，一般用函数glBindAttribLocation（）来绑定每个attribute变量的位置，然后用函数
+
+glVertexAttribPointer（）为每个attribute变量赋值。
+
+以下是例子：
+
+
+```c
+uniform mat4 u_matViewProjection;
+attribute vec4 a_position;
+attribute vec2 a_texCoord0;
+varying vec2 v_texCoord;
+void main(void)
+{
+gl_Position = u_matViewProjection * a_position;
+v_texCoord = a_texCoord0;
+}
+```
+
+**3.varying变量**
+varying变量是vertex和fragment shader之间做数据传递用的。一般vertex shader修改varying变量的值，
+
+然后fragment shader使用该varying变量的值。因此varying变量在vertex和fragment shader二者之间的声
+
+明必须是一致的。application不能使用此变量。
+
+以下是例子：
+
+
+```c
+// Vertex shader
+uniform mat4 u_matViewProjection;
+attribute vec4 a_position;
+attribute vec2 a_texCoord0;
+varying vec2 v_texCoord; // Varying in vertex shader
+void main(void)
+{
+gl_Position = u_matViewProjection * a_position;
+v_texCoord = a_texCoord0;
+}
+
+
+// Fragment shader
+precision mediump float;
+varying vec2 v_texCoord; // Varying in fragment shader
+uniform sampler2D s_baseMap;
+uniform sampler2D s_lightMap;
+void main()
+{
+vec4 baseColor;
+vec4 lightColor;
+baseColor = texture2D(s_baseMap, v_texCoord);
+lightColor = texture2D(s_lightMap, v_texCoord);
+gl_FragColor = baseColor * (lightColor + 0.25);
+}
+```
+
+## **OpenGL ES着色器语言之变量和数据类型**
+
+http://blog.csdn.net/hgl868/article/details/7846269
+
+## **三角形、条带与扇面**
+
+http://book.2cto.com/201412/48540.html

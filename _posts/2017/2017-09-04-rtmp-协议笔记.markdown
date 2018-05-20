@@ -4,35 +4,352 @@ title: "rtmp 协议笔记"
 date: "2017-09-04 16:00"
 ---
 
-RTMP协议是应用层协议，是要靠底层可靠的传输层协议（通常是TCP）来保证信息传输的可靠性的。
-在基于传输层协议的链接建立完成后，RTMP协议也要客户端和服务器通过“握手”来建立基于传输层链接之上的RTMP Connection链接
-，在Connection链接上会传输一些控制信息，如SetChunkSize,SetACKWindowSize。其中CreateStream命令会创建一个Stream链接，
-用于传输具体的音视频数据和控制这些信息传输的命令信息。RTMP协议传输时会对数据做自己的格式化，这种格式的消息我们称之为RTMP Message，而实际传输的时候为了更好地实现多路复用、分包和信息的公平性，发送端会把Message划分为带有Message ID的Chunk，每个Chunk可能是一个单独的Message，也可能是Message的一部分，在接受端会根据chunk中包含的data的长度，message id 和 message 的长度把 chunk 还原成完整的 Message，从而实现信息的收发。
+# RTMP介绍
 
-## 握手过程
-
-要建立一个有效的RTMP Connection链接，首先要“握手”:客户端要向服务器发送C0,C1,C2（按序）三个chunk，服务器向客户端发送S0,S1,S2（按序）三个chunk，然后才能进行有效的信息传输。RTMP协议本身并没有规定这6个Message的具体传输顺序，但RTMP协议的实现者需要保证这几点：
-
-- 客户端要等收到S1之后才能发送C2
-- 客户端要等收到S2之后才能发送其他信息（控制信息和真实音视频等数据）
-- 服务端要等到收到C0之后发送S1
-- 服务端必须等到收到C1之后才能发送S2
-- 服务端必须等到收到C2之后才能发送其他信息（控制信息和真实音视频等数据）
+RTMP是Real-Time Messaging Protocol(实时消息传送协议)的缩写，它是Adobe Systems公司为Flash播放器和服务器之间音频、视频和数据传输开发的协议，然而随着直播的流行，RTMP协议又焕发新的生命力，将编码后的音视频按照RTMP协议规范传输到服务器可以实现直播。以下讲的RTMP是基于TCP协议的。通过Android的原生类MediaCodec可以获得硬编后的视音频数据，处理封装为FLV格式，按照RTMP协议规范传输到服务器可以实现直播。
 
 
-RTMP-Handshake
+# RTMP 握手
 
-[RTMP-HandShake](/images/RTMP-HandShake.png)
+![RTMP-HandShake](/images/RTMP-HandShake.png)
 
-理论上来讲只要满足以上条件，如何安排6个Message的顺序都是可以的，但实际实现中为了在保证握手的身份验证功能的基础上尽量减少通信的次数，一般的发送顺序是这样的，这一点可以通过wireshark抓ffmpeg推流包进行验证：
+## RTMP规范中的握手
 
+RTMP理论上的规则如下：
+在发送任何数据之前客户端必须等待接收S2。
+服务端在发送任何数据之前必须等待接收C2。
+握手开始于客户端发送C0，C1块。
+在发送C2之前客户端必须等待接收S1 。
+服务端在发送S0和S1之前必须等待接收C0，也可以等待接收C1。
+服务端在发送S2之前必须等待接收C1。
 
-只要满足以上条件，减少通信次数，也可以这样：
+其中C0和S0占1个字节
+在C0中字段表示客户端要求的RTMP版本 ，一般是3
+在S0中字段表示服务器选择的RTMP版本，一般是3
 
-｜client \｜ Server  ｜
-|:------------------:|
-｜  －－－C0+C1—->    |
-｜  <－－S0+S1+S2–    |
-｜  －－－C2-－－－>   ｜
+C1、S1 长度为 1536字节
+time: 发送时间戳， 4字节
+zero: 就写0，4字节
+random: 随机数据，1528字节，因为每个端点必须用自己初始化的握手和对端初始化的握手来区分身份，所以这个数据应有充分的随机性。
 
-## RTMP Chunk Stream
+C2和S2消息有1536个字节长，是S1和C1的回复
+time: 发送时间戳，4个字节
+time2: C1/S1 发送的时间戳，4个字节
+random: S1/C1 发送的随机数，1528个字节
+
+## 实际实现的握手
+
+```
+client         Server
+ | －－－C0+C1—->  |
+ | <－－S0+S1+S2-  |
+ | －－－C2-－－－> |
+```
+在实际应用中，一般是客户端先将C0, C1同时发出，服务器在收到C1 之后同时将S0, S1, S2发给客户端，S2的内容就是收到的C1块的内容，C2的内容就是S1的内容，简单握手完成。项目中通过Socket获取InputStrem和OutputStream，分别用于读取S0的内容、S1的内容、S2的内容，和发送C0的内容、C1的内容、C2的内容，C0、S0、C1、S1、C2、S2如下:
+
+### C0和S0
+
+C0内容是一个代表版本号0x03的字节，直接读取S0的第一个字节判断是否是版本号0x03
+
+### C1和S1
+
+C1格式如下：
+Time: 发送时间戳，4bytes
+Version: 程序版本，C1一般是0x80000702，4bytes
+Key: 764bytes
+Digest: 764bytes
+
+Key(764个字节)结构如下:
+random-data: (offset)bytes
+key-data: 128bytes
+random-data: (764-offset-128-4)bytes
+offset: 4bytes
+
+Digest(764个字节)结构如下:
+offset: 4bytes
+random-data: (offset)bytes
+digest-data: 32bytes
+random-data: (764-4-offset-32)bytes
+
+### C1
+
+将C1划分如下:
+c1s1-part1: n bytes
+digest-data: 32bytes
+c1s1-part2: (1536-n-32)bytes
+
+C1digest-data算法部分：HMACsha256(c1s1-part1+c1s1-part2构成的字符数组, FPKey, 30)，FPKey这里不列出，可以去网上找，是一个字节数组常量
+
+先要给出Digest字段的offset，这个offset值由随机数获得，当然大小不能大于764-4-32=728，根据offset可以确定c1s1-part1和c1s1-part2的大小，将c1s1-part1、c1s1-part2全部置为随机数，然后在对应位置填入正确的TimeStamp、Version，最后通过上面的算法算出C1的digest-data，设置后的c1s1-part1、digest-data、c1s1-part2三个部分就构成了C1
+
+### S1
+
+项目中将S1直接读取，存到一个字节数组，作为C2的内容发送
+
+### C2和S2
+
+项目中客户端发送的C2就是收到的S1，收到的S2也应该是之前发送的C1
+
+### Socket
+
+RTMP协议是基于TCP，所以基于TCP的Socket很重要，是用于传输的关键。
+Java实现Socket如下：
+
+## 客户端
+
+1.构建一个Socket，传进host和port(这里的port是Server的，客户端的不用显示地选择一个port)，port在0到65535之间：
+
+> Socket(String host, int port);//实际上的port用RTMP默认的1935，host就是推流地址的host部分
+
+2.通过上面构建的Socket实例与服务端通信:
+写数据到服务端:
+
+> getOutputStream()
+
+从服务端读数据：
+
+> getInputStream();
+
+从服务端读取数据前可以通过setSoTimeout(int timeout)设置每次阻塞读取数据的时间段，如果读取数据的时间超过，将抛出SocketTimeoutException错误，timeout单位是毫秒，且大于0，如果是0表示无穷大
+
+3.调用Socket实例的close()关闭连接
+
+## 服务端
+
+虽然项目中只需要实现客户端的Socket，服务端的Socket不用前端人员考虑，但这里顺便提提服务端
+
+1.构建一个ServerSocket，传进port：
+
+> ServerSocket(int port);
+
+2.接着要重复以下操作，因为随时可能有客户端连接:
+2.1调用ServerSocket实例的accept()方法监听来自客户端的请求连接，接受并返回一个Socket实例，这个方法在连接建立前是阻塞的:
+
+> Socket client=mServerSocket.accept();
+
+2.2开一个新线程，在线程里调用client.getInputStream()和client.getOutStream()与某个建立连接的客户端通信，通信结束在子线程里通过client.close()关闭与某个客户端的连接。开了新线程是为了实现服务端进程与多个客户端进行同时通信，想想只有一个线程，如果有多个客户端，那是不是要等？甚至还会有其他错误发生，例如超时问题？
+
+3.调用ServerSocket实例的close()方法
+
+### 2. 调用connect命令
+
+在讲connect之前，先了解一下基本概念
+
+#### 2.1  Message(消息)与Chunk
+
+RTMP协议传输时会对数据做自己的格式化，这种格式的消息称为RTMP Message，Message有不同的类型例如音频消息、视频消息、控制消息。格式如下：
+```
+Timestamp(时间戳):4个字节
+Length(长度):3个字节
+TypeId(类型Id):消息的类型Id，1个字节
+Message Stream ID:4个字节，并且以小端格式存储
+```
+
+好吧，不懂也没关系，因为实际上传输的是Chunk，实际上传输时会将一个Message拆分为多个Chunk，Chunk由Chunk Header和Chunk Data两个部分组成，Chunk Header细分为Chunk Basic Header、Chunk Message Header、Extended TimeStamp。
+
+##### Chunk Basic Header
+
+Chunk Basic Header是1-3个字节，以小端方式存储，分为Chunk Type和Chunk Stream ID(CSID)，Chunk Type决定了后面的Chunk Message Header的格式，固定2位，CSID可以是6位或者8位或者16位，一般一种类型的消息设置为一个CSID，例如项目中将所属Message是音频类型的Chunk的CSID设置为0x07，所属Message是视频类型的Chunk的CSID设置为0x06。RTMP支持用户自定义范围在[3,65599(=2^16-1+64)]的CSID，0、1、2由协议保留表示特殊信息，具体来说如果Chunk Basic Header是1个字节，那么CSID占6位，由于0、1、2表示特殊信息，所以真正可以自定义的CSID范围是[3,63];如果Chunk Basic Header是两个字节，那么会把Chunk Type所在的那个字节的剩余位置为0，剩下一个字节表示CSID-64,所以CSID占8个bit，范围是[64,319];如果Chunk Basic Header是3个字节，那么会把Chunk Type所在的那个字节的剩余位置为1，剩下2个字节表示CSID-64,所以CSID占16bit，范围是[64-65599]。项目中我使用了1个字节的Chunk Basic Header。
+
+##### Chunk Message Header
+
+相比Chunk Basic Header复杂，上面说到Basic Header里面的Chunk Type(fmt)决定了Message Header的格式，由于fmt占两个bit，所以Message Header的格式有以下4种：
+
+###### fmt=0
+
+信息最全的，Message Header占11个字节，包括TimeStamp(3)、Message Length(3)、Message Type Id(1)和Message Stream Id(4)，这里说一下TimeStamp，这个表示发送时间戳，如果时间比2^24-1还大，那么TimeStamp全部bit置为1，真正的时间戳去下面介绍的Extended TimeStamp找，Message Length字段是所属Message的payload部分的长度，payload是指Message的内容部分，是一些音频或者视频或者配置信息，由Message的类型决定，Message Type Id就是Message类型对应的Id，例如0x08代表音频类型，0x09代表视频，0x14代表一些元数据或者用户数据，0x16代表命令类型，具体可以查看RTMP协议的规范。
+
+###### fmt=1
+
+Message Header占7个字节，省略了Message Stream Id的4个字节，表示和上一个Chunk一样，同时TimeStamp改为TimeStamp Delta存储的是与上一个Chunk的时间戳差，如果TimeStamp Delta如果比2^24-1还大，那么TimeStamp全部bit置为1，真正的时间戳直接去Extended TimeStamp找
+
+###### fmt=2
+
+Message Header占3个字节，只剩下TimeStamp Delta，TimeStamp Delta如果比2^24-1还大，那么TimeStamp全部bit置为1，真正的时间戳直接去Extended TimeStamp找，其他与上一个Chunk一样
+
+###### fmt=3
+
+Message Header占0个字节，表示这个chunk的Message Header的信息和上一个完全相同，如果上一个Chunk的TimeStamp或者TimeStamp Delta超过2^24-1，这个Chunk真正的时间戳直接去这个Chunk的Extended TimeStamp找
+
+故整个Message Header的长度是0到11个字节,项目中将Message分成多个Chunk时，会把第一个Chunk的fmt置为0，其余的Chunk置为3
+
+##### Extended TimeStamp
+
+4个字节，当Chunk Message Header的TimeStamp或者TimeStamp Delta超过2^24-1时起作用，超过时Extended TimeStamp保存真正的TimeStamp，否则不添加这个字段。
+
+##### Chunk Data
+
+Chunk Data放的是一些元数据、配置数据或者按照FLV格式封装的音视频数据
+
+#### 2.2 Message Type
+
+##### 2.2.1Chunk所属Message是协议控制消息
+
+这种Chunk要设置Message Stream Id=0，CSID=2，根据Message Type Id的不同分为以下几类：
+
+###### 1.Set Chunk Size
+
+Message Type Id=1，Chunk Size放在Chunk Data（设置成32bit）部分，第一个bit设为0，剩余31bit表示新的Chunk Size大小。Chunk Size是Payload部分(Chunk Data)的大小，单位是字节，默认是128字节，注意Message拆分后的最后一个Chunk可能没有128个字节那么大，无论是客户端和服务端都各自维护自身和对端的两个Chunk Size，自身的Chunk Size是发送方拆分Message的一个参考数据，而对端的Chunk Size是将接收到的Chunk重新组合成一个Message的参考数据。如果要改变自身的Chunk Size，要通过Set Chunk Size告知对方。
+
+###### 2.Abort
+
+Message Type Id=2,让接收方丢弃已经接收了的CSID=csid的Chunk，csid放在Chunk Data(设置成32bit)部分,意义在于想要抛弃一个Message时，可能发现这个Message拆分后的某些Chunk已经发送出去，这时候用这条信息通知对方抛弃已经接收的属于这个Message的Chunk
+
+###### 3.Acknowledgement(ACK)
+
+Message Type Id=3，具体可以查看下面的Window Acknowlegement Size的解释
+
+###### 4.User Controll Message
+
+Message Type Id=4，用于通知对端用户的控制事件，Chunk Data放Event Type，占2个字节，接着放Event Data，是可变长的，这里只说5种类型：
+
+**4.1** Stream Begin: Event Type 为 0,当客户端和服务端成功 connect 后发送,Event Data 为 4B，内容是已经可以正式用来传输数据的 Stream ID；
+
+**4.2** Stream EOF: Event Type 为 1，当音视频流已经全部传输完后发送， Event Data 为 4B，用来表示已经发送完音视频流的 Stream ID；
+
+**4.3** Set Buffer Length: Event Type 为 3，客户端通知服务端自己存储一个流的数据的缓存的长度（毫秒单位），Event Data 的前 4个字节表示 stream ID，后面 4个字节表示缓存的长度（毫秒单位）
+
+**4.4** PING_REQUEST:Event Type为6，服务端发送这个消息测试客户端是否可达，Event Data放服务端发送的时间戳，4个字节
+
+**4.5** PONG_REPLY:Event Type为7，客户端对之前服务器发送的PING_REQUEST的回应， Event Data放PING_REQUEST的时间戳
+
+###### 5.Window Acknowledgement(ACK) Size
+
+Message Type Id=5,Window Size表示可以发送的未得到确认的最大字节数，A发送Window Acknowledgement Size控制信息给B，通知B发送ACK消息的Window Size,之后A发送字节给B，B一旦发现已收到的字节数等于Window Size就会发送一个ACK信息给A表示确认收到，而这个ACK信息是到目前为止已接收到的字节数，放在Chunk Data部分，占32位。Window Acknowledgement Size也是放在Chunk Data部分，占32位。
+
+###### 6.Set Peer Bandwidth
+
+Message Type Id=6:表示Set Peer Bandwidth，用于限制对端的输出带宽，放在Chunk Data部分，32bit表示Window  Size，还有8bit表示Limit Type，Limit Type分为以下三类:
+**0**: Hard，将对端当前带宽设置为该信息定义的Window Size
+**1**: Soft，将对端当前宽带设置为该信息定义的 Window Size，或者对端当前的Window Size(即保持不变)，主要取决于谁的 Window Size 更小
+**2**: Dynamic，如果上一个Set Peer Bandwidth的 Limit Type 为 Hard 那么，继续使用 Hard 为基准，否则忽略该次协议信息
+
+如果对端在本消息中收到的值与Window Size不相同，则发回一个 Window Acknowledgement(ACK) Size。
+
+##### 2.2.2 Chunk所属Message是数据类型
+
+1.Message Type Id=8:表示音频，Chunk Data放的是FLV-TAG格式的音频数据
+2.Message Type Id=9:表示视频，Chunk Data放的是FLV-TAG格式的视频数据
+
+##### 2.2.3 Chunk所属类型是Command(命令)类型
+
+这种类型的Chunk是很重要的配置Chunk，比如接下来的connect命令、createstream命令、publish命令等。所有Message Type 是Command类型的Chunk，其Chunk Data都是AMF格式的，AMF格式有两种，项目中用了AMF0，对应的Message Type Id为COMMAND_AMF0(0x14)
+
+###### AMF格式
+
+AMF格式是二进制的数据格式，作用类似于JSON,都是用于数据传输，有AMF0和AMF3两种，AMF0定义的数据类型如下:
+
+**AMFNumber(0×00)**:double类型，用8个字节表示
+
+**Boolean(0×01)**:1个字节表示，使用00表示false，使用01表示true
+
+**String(0×02)**:字符串长度（2个字节）+字符串UTF8格式的内容组成
+
+**Object( 0×03)**: HashMap，内容由UTF8字符串作为Key(不用写AMFType)，任意AMF类型作为Value（要写AMFType），最后该对象由3个字节——00 00 09 来表示结束。将一个AMFObject写入一个流中，要先写AMFObject类型，然后把这个AMFObject的所有键值对写入这个流，最后添加0x000009,在写入键值对时先写key，这个key就是AMFString，但是不写AFMType，例如key为“abc”，那么直接写这个字符串的长度然后就是这个字符串，不需要在前面添加Type:0x02,接着写这个key对应的value，这个value要写Type。
+
+**Null(0×05)**:无附加内容
+
+**Undefined(0×06)**: 无附加内容
+
+**MixedArray(0×08)**: HashMap，与Object不同的是该对象定义了HashMap的大小，在添加完Type:0x08 后，用4个字节申明键值对的数目，再添加所有键值对，最后添加0x000009
+
+**Array(0x0a)**:ArrayList，先用4个字节表示ArrayList元素的数目，然后在添加元素
+
+##### 了解完这些基本的概念后，再看回connect命令
+
+connect命令用于客户端请求与服务端连接，属于命令类型的Chunk，格式如下：
+
+```
+Command Name[String]:命令名字，设置为"connect"
+Transaction ID[Number]:  命令标识，值为1
+Command Object[Object]: 以键值对形式存储相关信息的命令对象，具体如下：
+```
+假设推流地址为 `rtmp://host[:port]/appName/streamName(appInstance)` port可选，默认1935,appName/streamName(appInstance)是path部分
+```
+app[String]: 服务器应用名，即appName
+tcUrl[String]: 服务url，设置为[rtmp://host[:port]/appName](https://link.jianshu.com/?t=rtmp://host%5B:port%5D/appName)
+objectEncoding[Number]:AMF编码方法，AMF0则是0，AFM3则是3
+audioCodecs[Number]: 指示客户端支持的音频编解码器
+videoCodecs[Number]: 指示客户端支持的视频解码
+swfurl[String]:发起连接的swf文件的url，可以设为""
+pageUrl[String]:swf文件被加载的页面的Url,可以设为""
+videoFunction[Number]: 设置为1
+fpad[Boolean]: 表示是否使用代理。一般为 false。
+flashver[String]:Flash播放器版本。
+```
+
+```cpp
+Command connect = new Command("connect", 1);//参数分别为Commad Name和Transaction ID，在内部编码为AMF0格式
+        AmfObject args = new AmfObject();
+        args.setProperty("app", appName);
+        args.setProperty("flashVer", "LNX 11,2,202,233");
+        args.setProperty("swfUrl", “”);
+        args.setProperty("tcUrl",url);
+        args.setProperty("fpad", false);
+        args.setProperty("capabilities", 239);
+        args.setProperty("audioCodecs", 3575);
+        args.setProperty("videoCodecs", 252);
+        args.setProperty("videoFunction", 1);
+        args.setProperty("pageUrl", “”);
+        args.setProperty("objectEncoding", 0);
+        connect.addData(args);
+```
+
+服务端的响应格式如下:
+Command Name[String]:含有_result或_error，表示响应时结果还是错误。
+TransactionID[Number]:客户端发起connect时的TransactionID，也就是1，表示是对这条命令的响应
+还有其他的参数，这里不介绍，项目中忽略其他信息。
+
+#### 3 创建一个流
+<pre>
+先调用realeaseStream命令释放前一个流 ：
+Command Name[String]:设置为“realeaStream "
+Transaction ID[Number]: 项目中设置为2
+Command Object[Object]: 项目中设置为NULL
+其他参数：添加streamName
+
+然后调用FCPublish命令:
+Command Name[String]:设置为“FCPublish "
+Transaction ID[Number]: 项目中设置为3
+Command Object[Object]: 项目中设置为NULL
+其他参数：添加streamName
+
+最后客户端发送createStream命令到服务端来创建一个消息通信的逻辑通道。音频、视频和metadata的发布都要在这个命令创建的流通道上，格式如下:
+Command Name[String]:设置为“createStream "
+Transaction ID[Number]: 项目中设置为4
+Command Object[Object]: 项目中设置为NULL
+
+服务端对createStream命令的响应如下：
+Command Name[String]: 含有_result或_error，表示响应时结果还是错误
+Transaction ID[Number]: 客户端发起connect时的TransactionID，表示是对这条命令的响应
+Command Object[Object]: NULL
+</pre>
+
+**Stream ID: 返回的 stream ID 值，这个很重要，是之后客户端发送数据所用的逻辑流通道**
+
+### 4.调用publish命令
+
+<pre>
+Command Name[String]:设置为“publish "
+Transaction ID[Number]: 值为0
+Command Object[Object]: 项目中设置为NULL
+Publish Name[String]:streamName
+Publish Type[String]:设置为”live”，”record”或”append”，具体如下:
+“record”:流被发布，并且数据被录制到一个新的文件。文件被存储到服务端的服务应用的目录的一个子目录下。如果文件已经存在则重写文件。
+“append”:流被发布并且附加到一个文件之后。如果没有发现文件则创建一个文件。
+“live”:发布直播数据而不录制到文件。
+
+除此以外，还需要将这个Chunk的Message Stream Id设置为createStream命令获得的steam ID
+
+服务端对publish命令的响应如下：
+Command Name[String]:“onStatus”
+Transaction ID[Number]: 客户端发起connect时的TransactionID，表示是对这条命令的响应
+Command Object[HashMap]: NULL
+Info Object[Object]:AMF类型的Object必定包含一个参数”code”,String类型，代表具体状态的关键字,比如”NetStream.Publish.Start”表示开始推流
+</pre>
+
+之后就可以发布元数据、音频、视频类型的Chunk了，其Message Stream Id设置为createStream命令获得的stream ID
+
+## 参考
+
+- [https://www.jianshu.com/p/99d2e60ddec9](https://www.jianshu.com/p/99d2e60ddec9)

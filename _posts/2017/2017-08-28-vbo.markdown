@@ -1,0 +1,88 @@
+---
+layout: "post"
+title: "VBO"
+date: "2017-08-28 11:26"
+---
+
+## VBO，Vertex Buffer Array
+
+为了加快显示速度，显卡增加了一个扩展，即VBO。它本质上是存储几何数据的缓存。它直接把顶点数据放置到显卡中的高速缓存，极大提高了绘制速度。
+
+这个扩展用到ARB_vertex_buffer_object，它可以直接像顶点数组那样使用。唯一不同的地方在于它需要将数据载入显卡的高效缓存，因此需要占用渲染时间。
+
+### VBO用法流程
+
+#### 初始化阶段
+
+```c
+//1. 生成一个句柄
+glGenBuffersARB(1, &nVBOVertices);
+//2. 声明该句柄为一个vbo句柄，并选择之
+glBindBufferARB(GL_ARRAY_BUFFER_ARB, nVBOVertices);
+//3. 将顶点集上传至server端
+ glBufferDataARB(GL_ARRAY_BUFFER_ARB, sizeof(vertices), vertices,GL_STATIC_DRAW);
+ ```
+
+#### 使用阶段
+
+```c
+//1.开始使用vbo
+glEnableClientState(GL_VERTEX_ARRAY);
+//2.选择当前使用的vbo
+glBindBufferARB(GL_ARRAY_BUFFER_ARB, nVBOVertices);
+//3.指定vbo顶点格式
+glVertexPointer(3, GL_FLOAT, 0, BUFFER_OFFSET(0));
+//4.画吧
+glDrawArrays( GL_TRIANGLES, 0, g_pMesh->m_nVertexCount ); //
+//5.停止使用vbo
+glDisableClientState(GL_VERTEX_ARRAY);
+```
+
+#### 收尾阶段
+
+```c
+//1.删除句柄，同时删除server端顶点缓冲
+glDeleteBuffersARB(1,&nVBOVertices);
+```
+
+### 对比纹理缓冲用法
+
+#### 初始化阶段
+
+```c
+//1.创建句柄
+glGenTextures(1, &texID);
+//2. 设置句柄类型
+glBindTexture(GL_TEXTURE_2D, texID);
+//3. 上传纹理缓冲
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+             img->GetWidth(), img->GetHeight(),
+             0, GL_RGBA, GL_UNSIGNED_BYTE, raw_rgba);
+```
+
+#### 使用阶段
+
+```c
+//1.开始使用纹理缓冲
+glEnable(GL_TEXTURE_2D);
+//2.选择当前使用的纹理缓冲
+glBindTexture(GL_TEXTURE_2D, texID);
+//3. 发送顶点和纹理坐标，画吧...省略 glDrawArrays
+//4.停止使用纹理
+glDisable(GL_TEXTURE_2D);
+```
+
+#### 收尾阶段
+
+```c
+//1.删除句柄,，同时删除server端缓冲
+glDeleteTextures(1,&texID);
+```
+
+### 参考文章
+
+0. http://blog.sina.com.cn/s/blog_4062094e0100aluv.html
+1. [NEHE教程第45讲](http://nehe.gamedev.net/data/lessons/lesson.asp?lesson=45)
+2. [http://hi.baidu.com/excerpts/blog/item/dde4e0ceeeee8c0692457e54.html](http://hi.baidu.com/excerpts/blog/item/dde4e0ceeeee8c0692457e54.html)
+3. [OpenGL VBO顶点缓冲的使用](http://www.cppblog.com/w2001/archive/2008/05/10/49376.html)
+4. [Opengl Vertex Buffer Object ](http://www.songho.ca/opengl/gl_vbo.html)

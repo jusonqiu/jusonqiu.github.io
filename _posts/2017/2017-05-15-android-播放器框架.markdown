@@ -1,0 +1,15 @@
+---
+layout: "post"
+title: "android 播放器框架"
+date: "2017-05-15 12:21"
+---
+
+## MediaPlayer
+
+## EXOPlayer
+
+## IJKPlayer 框架
+
+![播放器基本框图](/images/ijkplayer/播放器基本框图.png)
+
+![核心代码流程图](/images/ijkplayer/ijkplayer核心代码.png)
