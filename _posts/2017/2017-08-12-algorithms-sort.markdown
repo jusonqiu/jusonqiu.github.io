@@ -21,8 +21,8 @@ date: "2017-08-12 11:36"
 
 ## 常见的排序算法时间空间
 
-|     Class     |                                      Worst-case                                       |                                       Best-case                                        |     Average     |      Worst-case <br/>space complexity       |                             wiki                             |
-| ------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------------- | ------------------------------------------- | ------------------------------------------------------------ |
+| Class         | Worst-case                                                                            | Best-case                                                                              | Average         | Worst-case <br/>space complexity            | wiki                                                         |
+|:--------------|:--------------------------------------------------------------------------------------|:---------------------------------------------------------------------------------------|:----------------|:--------------------------------------------|:-------------------------------------------------------------|
 | QuickSort     | $$O(n^2)$$                                                                            | $$O(nlog(n))_{simple partition}$$ <br/>  $$O(n)_{three-way partition and equal keys}$$ | $$O(nlog(n))$$  | $$O(log(n))$$<br/>$$O(n)_{native}$$         | [Quicksort](https://www.wikiwand.com/en/Quicksort)           |
 | Radix sort    | $$O(wn)$$                                                                             | -                                                                                      | -               | $$O(w+N)$$                                  | [Radix sort](https://www.wikiwand.com/en/Radix_sort)         |
 | ShellSort     | $$O(n^2)_{worst knoew gap sequence}$$ <br/> $$O(nlog^2n)_{best known gap sequence} $$ | $$O(nlog n)$$                                                                          | 取决于间隙序列  | $$O(n)_{total}$$ <br/> $$O(1)_{auxiliary}$$ | [ShellSort](https://www.wikiwand.com/en/Shellsort)           |
@@ -196,13 +196,15 @@ template<typename T>
 ### Merge Sort
 
 This is divide and conquer algorithm. This works as follows.
-(1) Divide the input which we have to sort into two parts in the middle. Call it the left part
-    and right part.
-        Example: Say the input is  -10 32 45 -78 91 1 0 -16 then the left part will be
-        -10 32 45 -78 and the right part will be  91 1 0 6.
-(2) Sort Each of them separately. Note that here sort does not mean to sort it using some other
-         method. We already wrote function to sort it. Use the same.
-(3) Then merge the two sorted parts.
+
+* (1) 把输入的数组从中间分成左右两半部分
+
+例如: 输入：   -10 32 45 -78 91 1 0 -16
+     左半部分：-10 32 45 -78
+		 右半部分： 91 1 0 6
+
+* (2) 排序各部分
+* (3) 合并各部分
 
 ```
 ------------
